@@ -1,4 +1,5 @@
 import torch
+import time
 import logging
 from torch.distributions.multivariate_normal import MultivariateNormal
 
@@ -97,9 +98,11 @@ def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000):
     dataset = torch.zeros((retrain_after_iter, mppi.nx + mppi.nu), dtype=mppi.U.dtype, device=mppi.d)
     for i in range(iter):
         state = env.state.copy()
+        command_start = time.perf_counter()
         action = mppi.command(state)
+        elapsed = time.perf_counter() - command_start
         s, r, _, _ = env.step(action.numpy())
-        logger.debug("action taken: %f cost received: %f", action, -r)
+        logger.debug("action taken: %.4f cost received: %.4f time taken: %.5fs", action, -r, elapsed)
         env.render()
 
         di = i % retrain_after_iter
