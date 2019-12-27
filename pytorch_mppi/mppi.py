@@ -7,19 +7,39 @@ logger = logging.getLogger(__name__)
 
 
 class MPPI():
-    """ MMPI according to algorithm 2 in Williams et al., 2017
-        'Information Theoretic MPC for Model-Based Reinforcement Learning' """
+    """ Model Predictive Path Integral control
+    This implementation batch samples the trajectories and so scales well with the number of samples K.
 
-    def __init__(self, dynamics, nx, K, T, running_cost, device="cpu", terminal_state_cost=None,
+    Implemented according to algorithm 2 in Williams et al., 2017
+    'Information Theoretic MPC for Model-Based Reinforcement Learning',
+    based off of https://github.com/ferreirafabio/mppi_pendulum
+    """
+
+    def __init__(self, dynamics, nx, num_samples, horizon, running_cost, device="cpu", terminal_state_cost=None,
                  lambda_=1.,
                  noise_mu=torch.tensor(0., dtype=torch.double),
                  noise_sigma=torch.tensor(1., dtype=torch.double),
                  u_init=torch.tensor(1., dtype=torch.double),
                  U_init=None):
+        """
+
+        :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
+        :param nx: state dimension
+        :param num_samples: K, number of trajectories to sample
+        :param horizon: T, length of each trajectory
+        :param running_cost: function(state, action) -> cost (K x 1) taking in batch state and action (same as dynamics)
+        :param device: pytorch device
+        :param terminal_state_cost: function(state) -> cost (K x 1) taking in batch state
+        :param lambda_: temperature, positive scalar where larger values will allow more exploration
+        :param noise_mu: control noise mean (used to bias control samples)
+        :param noise_sigma: control noise covariance (assume v_t ~ N(u_t, noise_sigma))
+        :param u_init: what to initialize new end of trajectory control to be
+        :param U_init: initial control sequence; defaults to noise
+        """
         self.d = device
         self.dtype = u_init.dtype
-        self.K = K  # N_SAMPLES
-        self.T = T  # TIMESTEPS
+        self.K = num_samples  # N_SAMPLES
+        self.T = horizon  # TIMESTEPS
 
         # dimensions of state and control
         self.nx = nx
