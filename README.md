@@ -19,7 +19,7 @@ algorithm.
 - `next state <- dynamics(state, action)` function (doesn't have to be true dynamics)
     - `state` is `K x nx`, `action` is `K x nu`
 - `cost <- running_cost(state, action)` function
-    - `cost` is `K x 1`, state` is `K x nx`, `action` is `K x nu`
+    - `cost` is `K x 1`, state is `K x nx`, `action` is `K x nu`
 
 # Features
 - Approximate dynamics MPPI with importance sampling
