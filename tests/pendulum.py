@@ -76,4 +76,5 @@ if __name__ == "__main__":
     nx = 2
     mppi_gym = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
                          lambda_=lambda_)
-    mppi.run_mppi(mppi_gym, env, train)
+    total_reward = mppi.run_mppi(mppi_gym, env, train)
+    logger.info("Total reward %f", total_reward)
