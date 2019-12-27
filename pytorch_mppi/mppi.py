@@ -123,16 +123,19 @@ class MPPI():
         return action
 
 
-def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000):
+def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000, render=True):
     dataset = torch.zeros((retrain_after_iter, mppi.nx + mppi.nu), dtype=mppi.U.dtype, device=mppi.d)
+    total_reward = 0
     for i in range(iter):
         state = env.state.copy()
         command_start = time.perf_counter()
         action = mppi.command(state)
         elapsed = time.perf_counter() - command_start
         s, r, _, _ = env.step(action.numpy())
+        total_reward += r
         logger.debug("action taken: %.4f cost received: %.4f time taken: %.5fs", action, -r, elapsed)
-        env.render()
+        if render:
+            env.render()
 
         di = i % retrain_after_iter
         if di == 0 and i > 0:
@@ -141,3 +144,4 @@ def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000):
             dataset.zero_()
         dataset[di, :mppi.nx] = torch.tensor(state, dtype=mppi.U.dtype)
         dataset[di, mppi.nx:] = action
+    return total_reward, dataset
