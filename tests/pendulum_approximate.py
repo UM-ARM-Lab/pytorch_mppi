@@ -157,6 +157,6 @@ if __name__ == "__main__":
         env.env.state = [np.pi, 1]
 
     nx = 2
-    mppi_gym = mppi.MPPI(dynamics, nx, num_samples=N_SAMPLES, horizon=TIMESTEPS, running_cost=running_cost,
-                         lambda_=lambda_, noise_sigma=noise_sigma)
+    mppi_gym = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
+                         lambda_=lambda_)
     mppi.run_mppi(mppi_gym, env, train)

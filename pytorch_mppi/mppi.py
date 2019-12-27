@@ -15,24 +15,24 @@ class MPPI():
     based off of https://github.com/ferreirafabio/mppi_pendulum
     """
 
-    def __init__(self, dynamics, nx, num_samples, horizon, running_cost, device="cpu", terminal_state_cost=None,
+    def __init__(self, dynamics, running_cost, nx, noise_sigma, num_samples=100, horizon=15, device="cpu",
+                 terminal_state_cost=None,
                  lambda_=1.,
                  noise_mu=None,
-                 noise_sigma=torch.tensor(1., dtype=torch.double),
                  u_init=None,
                  U_init=None):
         """
 
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
+        :param running_cost: function(state, action) -> cost (K x 1) taking in batch state and action (same as dynamics)
         :param nx: state dimension
+        :param noise_sigma: control noise covariance (assume v_t ~ N(u_t, noise_sigma))
         :param num_samples: K, number of trajectories to sample
         :param horizon: T, length of each trajectory
-        :param running_cost: function(state, action) -> cost (K x 1) taking in batch state and action (same as dynamics)
         :param device: pytorch device
         :param terminal_state_cost: function(state) -> cost (K x 1) taking in batch state
         :param lambda_: temperature, positive scalar where larger values will allow more exploration
         :param noise_mu: control noise mean (used to bias control samples); defaults to zero mean
-        :param noise_sigma: control noise covariance (assume v_t ~ N(u_t, noise_sigma))
         :param u_init: what to initialize new end of trajectory control to be; defeaults to zero
         :param U_init: initial control sequence; defaults to noise
         """
