@@ -17,9 +17,9 @@ class MPPI():
 
     def __init__(self, dynamics, nx, num_samples, horizon, running_cost, device="cpu", terminal_state_cost=None,
                  lambda_=1.,
-                 noise_mu=torch.tensor(0., dtype=torch.double),
+                 noise_mu=None,
                  noise_sigma=torch.tensor(1., dtype=torch.double),
-                 u_init=torch.tensor(1., dtype=torch.double),
+                 u_init=None,
                  U_init=None):
         """
 
@@ -31,20 +31,26 @@ class MPPI():
         :param device: pytorch device
         :param terminal_state_cost: function(state) -> cost (K x 1) taking in batch state
         :param lambda_: temperature, positive scalar where larger values will allow more exploration
-        :param noise_mu: control noise mean (used to bias control samples)
+        :param noise_mu: control noise mean (used to bias control samples); defaults to zero mean
         :param noise_sigma: control noise covariance (assume v_t ~ N(u_t, noise_sigma))
-        :param u_init: what to initialize new end of trajectory control to be
+        :param u_init: what to initialize new end of trajectory control to be; defeaults to zero
         :param U_init: initial control sequence; defaults to noise
         """
         self.d = device
-        self.dtype = u_init.dtype
+        self.dtype = noise_sigma.dtype
         self.K = num_samples  # N_SAMPLES
         self.T = horizon  # TIMESTEPS
 
         # dimensions of state and control
         self.nx = nx
-        self.nu = 1 if len(u_init.shape) is 0 else u_init.shape[0]
+        self.nu = 1 if len(noise_sigma.shape) is 0 else noise_sigma.shape[0]
         self.lambda_ = lambda_
+
+        if noise_mu is None:
+            noise_mu = torch.zeros(self.nu, dtype=self.dtype)
+
+        if u_init is None:
+            u_init = torch.zeros_like(noise_mu)
 
         # handle 1D edge case
         if self.nu is 1:
@@ -57,7 +63,7 @@ class MPPI():
         self.noise_dist = MultivariateNormal(self.noise_mu, covariance_matrix=self.noise_sigma)
         # T x nu control sequence
         self.U = U_init
-        self.u_init = u_init
+        self.u_init = u_init.to(self.d)
 
         if self.U is None:
             self.U = self.noise_dist.sample((self.T,))
