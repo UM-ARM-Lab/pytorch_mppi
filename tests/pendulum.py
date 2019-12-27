@@ -29,7 +29,8 @@ if __name__ == "__main__":
 
     def dynamics(state, perturbed_action):
         # true dynamics from gym
-        th, thdot = state
+        th = state[:, 0].view(-1, 1)
+        thdot = state[:, 1].view(-1, 1)
 
         g = 10
         m = 1
@@ -37,13 +38,13 @@ if __name__ == "__main__":
         dt = 0.05
 
         u = perturbed_action
-        u = np.clip(u, -2, 2)
+        u = torch.clamp(u, -2, 2)
 
         newthdot = thdot + (-3 * g / (2 * l) * np.sin(th + np.pi) + 3. / (m * l ** 2) * u) * dt
         newth = th + newthdot * dt
-        newthdot = np.clip(newthdot, -8, 8)
+        newthdot = torch.clamp(newthdot, -8, 8)
 
-        state = torch.tensor([newth, newthdot])
+        state = torch.cat((newth, newthdot), dim=1)
         return state
 
 
@@ -52,8 +53,9 @@ if __name__ == "__main__":
 
 
     def running_cost(state, action):
-        theta = state[0]
-        theta_dt = state[1]
+        theta = state[:, 0]
+        theta_dt = state[:, 1]
+        action = action[:, 0]
         cost = angle_normalize(theta) ** 2 + 0.1 * theta_dt ** 2 + 0.001 * action ** 2
         return cost
 
