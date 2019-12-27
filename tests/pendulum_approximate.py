@@ -57,12 +57,16 @@ if __name__ == "__main__":
 
 
     def dynamics(state, perturbed_action):
-        u = torch.tensor([perturbed_action], dtype=torch.double, device=d)
-        u = torch.clamp(u, ACTION_LOW, ACTION_HIGH)
-        xu = torch.cat((state, u))
+        u = torch.clamp(perturbed_action, ACTION_LOW, ACTION_HIGH)
+        if state.dim() is 1 or u.dim() is 1:
+            state = state.view(1, -1)
+            u = u.view(1, -1)
+        if u.shape[1] > 1:
+            u = u[:, 0].view(-1, 1)
+        xu = torch.cat((state, u), dim=1)
         state_residual = network(xu)
         next_state = state + state_residual
-        next_state[0] = angle_normalize(next_state[0])
+        next_state[:, 0] = angle_normalize(next_state[:, 0])
         return next_state
 
 
@@ -79,8 +83,9 @@ if __name__ == "__main__":
 
 
     def running_cost(state, action):
-        theta = state[0]
-        theta_dt = state[1]
+        theta = state[:, 0]
+        theta_dt = state[:, 1]
+        action = action[:, 0]
         cost = angle_normalize(theta) ** 2 + 0.1 * theta_dt ** 2 + 0.001 * action ** 2
         return cost
 

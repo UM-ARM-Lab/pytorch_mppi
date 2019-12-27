@@ -17,6 +17,7 @@ class MPPI():
                  u_init=torch.tensor(1., dtype=torch.double),
                  U_init=None):
         self.d = device
+        self.dtype = u_init.dtype
         self.K = K  # N_SAMPLES
         self.T = T  # TIMESTEPS
 
@@ -48,22 +49,26 @@ class MPPI():
 
     def _start_action_consideration(self):
         # reseample noise each time we take an action; these can be done at the start
-        self.cost_total = torch.zeros(self.K, device=self.d)
         self.noise = self.noise_dist.sample((self.K, self.T))
         # cache action cost
         self.action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv
 
-    def _compute_total_cost(self, k):
-        state = self.state.clone()
+    def _compute_total_cost_batch(self):
+        # parallelize sampling across trajectories
+        cost_total = torch.zeros(self.K, device=self.d, dtype=self.dtype)
+        state = self.state.view(1, -1).repeat(self.K, 1)
+        # broadcast own control to noise over samples; now it's K x T x nu
+        perturbed_action = self.U + self.noise
         for t in range(self.T):
-            perturbed_action_t = self.U[t] + self.noise[k, t]
-            state = self.F(state, perturbed_action_t)
-            self.cost_total[k] += self.running_cost(state, perturbed_action_t).item()
-            # add action perturbation cost
-            self.cost_total[k] += perturbed_action_t @ self.action_cost[k, t]
-        # this is the additional terminal cost (running state cost at T already accounted for)
+            u = perturbed_action[:, t]
+            state = self.F(state, u)
+            cost_total += self.running_cost(state, u)
+        # action perturbation cost
+        perturbation_cost = torch.sum(perturbed_action * self.action_cost, dim=(1, 2))
         if self.terminal_state_cost:
-            self.cost_total[k] += self.terminal_state_cost(state)
+            cost_total += self.terminal_state_cost(state)
+        cost_total += perturbation_cost
+        return cost_total
 
     def _ensure_non_zero(self, cost, beta, factor):
         return torch.exp(-factor * (cost - beta))
@@ -71,15 +76,13 @@ class MPPI():
     def command(self, state):
         if not torch.is_tensor(state):
             state = torch.tensor(state)
-        self.state = state.to(dtype=self.U.dtype, device=self.d)
+        self.state = state.to(dtype=self.dtype, device=self.d)
 
         self._start_action_consideration()
-        # TODO easily parallelizable step
-        for k in range(self.K):
-            self._compute_total_cost(k)
+        cost_total = self._compute_total_cost_batch()
 
-        beta = torch.min(self.cost_total)
-        cost_total_non_zero = self._ensure_non_zero(self.cost_total, beta, 1 / self.lambda_)
+        beta = torch.min(cost_total)
+        cost_total_non_zero = self._ensure_non_zero(cost_total, beta, 1 / self.lambda_)
 
         eta = torch.sum(cost_total_non_zero)
         omega = (1. / eta) * cost_total_non_zero

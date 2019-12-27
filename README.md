@@ -15,7 +15,7 @@ the pendulum dynamics.
 
 # Features
 - Approximate dynamics MPPI with importance sampling
-- Parallel pytorch implementation for accelerated sampling (TODO)
+- Parallel/batch pytorch implementation for accelerated sampling
 
 # Tests
 Under `tests` you can find the `MPPI` method applied to known pendulum dynamics
