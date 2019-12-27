@@ -8,6 +8,11 @@ using importance sampling.
 Thus it can be used in place of other trajectory optimization methods
 such as the Cross Entropy Method (CEM), or random shooting.
 
+# Usage
+Clone repository somewhere, then `pip3 install -e .` to install in editable mode.
+See `tests/pendulum_approximate.py` for usage with a neural network approximating
+the pendulum dynamics.
+
 # Features
 - Approximate dynamics MPPI with importance sampling
 - Parallel pytorch implementation for accelerated sampling (TODO)
