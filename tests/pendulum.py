@@ -4,7 +4,9 @@ import torch
 import logging
 import math
 from pytorch_mppi import mppi
+from gym import wrappers, logger as gym_log
 
+gym_log.set_level(gym_log.INFO)
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG,
                     format='[%(levelname)s %(asctime)s %(pathname)s:%(lineno)d] %(message)s',
@@ -69,10 +71,7 @@ if __name__ == "__main__":
     if downward_start:
         env.state = [np.pi, 1]
 
-    from gym import wrappers
-    import time
-
-    env = wrappers.Monitor(env, '/tmp/mppi/{}/'.format(time.time()), force=True)
+    env = wrappers.Monitor(env, '/tmp/mppi/', force=True)
     env.reset()
     if downward_start:
         env.env.state = [np.pi, 1]
