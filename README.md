@@ -11,7 +11,15 @@ such as the Cross Entropy Method (CEM), or random shooting.
 # Usage
 Clone repository somewhere, then `pip3 install -e .` to install in editable mode.
 See `tests/pendulum_approximate.py` for usage with a neural network approximating
-the pendulum dynamics.
+the pendulum dynamics. See the `not_batch` branch for an easier to read
+algorithm.
+
+# Requirements
+- pytorch (>= 1.0)
+- `next state <- dynamics(state, action)` function (doesn't have to be true dynamics)
+    - `state` is `K x nx`, `action` is `K x nu`
+- `cost <- running_cost(state, action)` function
+    - `cost` is `K x 1`, state` is `K x nx`, `action` is `K x nu`
 
 # Features
 - Approximate dynamics MPPI with importance sampling
