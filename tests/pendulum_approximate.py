@@ -28,7 +28,7 @@ if __name__ == "__main__":
 
     import random
 
-    randseed = 5
+    randseed = 6
     if randseed is None:
         randseed = random.randint(0, 1000000)
     random.seed(randseed)
@@ -109,6 +109,11 @@ if __name__ == "__main__":
 
 
     dataset = None
+    # create some true dynamics validation set to compare model against
+    Nv = 1000
+    statev = torch.cat(((torch.rand(Nv, 1, dtype=torch.double) - 0.5) * 2 * math.pi,
+                        (torch.rand(Nv, 1, dtype=torch.double) - 0.5) * 16), dim=1)
+    actionv = (torch.rand(Nv, 1, dtype=torch.double) - 0.5) * (ACTION_HIGH - ACTION_LOW)
 
 
     def train(new_data):
@@ -151,10 +156,8 @@ if __name__ == "__main__":
             param.requires_grad = False
 
         # evaluate network against true dynamics
-        state = XU[:, :nx]
-        action = XU[:, nx:nx + nu]
-        yt = true_dynamics(state, action)
-        yp = dynamics(state, action)
+        yt = true_dynamics(statev, actionv)
+        yp = dynamics(statev, actionv)
         dtheta = angular_diff_batch(yp[:, 0], yt[:, 0])
         dtheta_dt = yp[:, 1] - yt[:, 1]
         E = torch.cat((dtheta.view(-1, 1), dtheta_dt.view(-1, 1)), dim=1).norm(dim=1)
