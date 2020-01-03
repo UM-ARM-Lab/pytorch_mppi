@@ -161,7 +161,8 @@ if __name__ == "__main__":
         dtheta = angular_diff_batch(yp[:, 0], yt[:, 0])
         dtheta_dt = yp[:, 1] - yt[:, 1]
         E = torch.cat((dtheta.view(-1, 1), dtheta_dt.view(-1, 1)), dim=1).norm(dim=1)
-        logger.info("Error with true dynamics theta %f theta_dt %f norm %f", dtheta.mean(), dtheta_dt.mean(), E.mean())
+        logger.info("Error with true dynamics theta %f theta_dt %f norm %f", dtheta.abs().mean(),
+                    dtheta_dt.abs().mean(), E.mean())
         logger.debug("Start next collection sequence")
 
 
