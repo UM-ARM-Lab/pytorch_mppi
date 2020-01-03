@@ -8,7 +8,7 @@ from gym import wrappers, logger as gym_log
 
 gym_log.set_level(gym_log.INFO)
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG,
+logging.basicConfig(level=logging.INFO,
                     format='[%(levelname)s %(asctime)s %(pathname)s:%(lineno)d] %(message)s',
                     datefmt='%m-%d %H:%M:%S')
 
@@ -67,6 +67,27 @@ if __name__ == "__main__":
         return next_state
 
 
+    def true_dynamics(state, perturbed_action):
+        # true dynamics from gym
+        th = state[:, 0].view(-1, 1)
+        thdot = state[:, 1].view(-1, 1)
+
+        g = 10
+        m = 1
+        l = 1
+        dt = 0.05
+
+        u = perturbed_action
+        u = torch.clamp(u, -2, 2)
+
+        newthdot = thdot + (-3 * g / (2 * l) * np.sin(th + np.pi) + 3. / (m * l ** 2) * u) * dt
+        newth = th + newthdot * dt
+        newthdot = torch.clamp(newthdot, -8, 8)
+
+        state = torch.cat((newth, newthdot), dim=1)
+        return state
+
+
     def angular_diff_batch(a, b):
         """Angle difference from b to a (a - b)"""
         d = a - b
@@ -123,11 +144,22 @@ if __name__ == "__main__":
             loss = (Y - Yhat).norm(2, dim=1) ** 2
             loss.mean().backward()
             optimizer.step()
-            logger.info("ds %d epoch %d loss %f", dataset.shape[0], epoch, loss.mean().item())
+            logger.debug("ds %d epoch %d loss %f", dataset.shape[0], epoch, loss.mean().item())
 
         # freeze network
         for param in network.parameters():
             param.requires_grad = False
+
+        # evaluate network against true dynamics
+        state = XU[:, :nx]
+        action = XU[:, nx:nx + nu]
+        yt = true_dynamics(state, action)
+        yp = dynamics(state, action)
+        dtheta = angular_diff_batch(yp[:, 0], yt[:, 0])
+        dtheta_dt = yp[:, 1] - yt[:, 1]
+        E = torch.cat((dtheta.view(-1, 1), dtheta_dt.view(-1, 1)), dim=1).norm(dim=1)
+        logger.info("Error with true dynamics theta %f theta_dt %f norm %f", dtheta.mean(), dtheta_dt.mean(), E.mean())
+        logger.debug("Start next collection sequence")
 
 
     downward_start = True
@@ -159,5 +191,5 @@ if __name__ == "__main__":
     nx = 2
     mppi_gym = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
                          lambda_=lambda_)
-    total_reward = mppi.run_mppi(mppi_gym, env, train)
+    total_reward, data = mppi.run_mppi(mppi_gym, env, train)
     logger.info("Total reward %f", total_reward)
