@@ -82,7 +82,12 @@ class MPPI():
     def _compute_total_cost_batch(self):
         # parallelize sampling across trajectories
         cost_total = torch.zeros(self.K, device=self.d, dtype=self.dtype)
-        state = self.state.view(1, -1).repeat(self.K, 1)
+
+        if self.state.shape == (self.K, self.nx):
+            state = self.state
+        else:
+            state = self.state.view(1, -1).repeat(self.K, 1)
+
         # broadcast own control to noise over samples; now it's K x T x nu
         perturbed_action = self.U + self.noise
         for t in range(self.T):
@@ -100,6 +105,11 @@ class MPPI():
         return torch.exp(-factor * (cost - beta))
 
     def command(self, state):
+        """
+            :param state: Should be nx or K x nx (for sampling from initial state distribution)
+            :returns action: best action nu
+        """
+
         if not torch.is_tensor(state):
             state = torch.tensor(state)
         self.state = state.to(dtype=self.dtype, device=self.d)
@@ -131,7 +141,7 @@ def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000, rend
         command_start = time.perf_counter()
         action = mppi.command(state)
         elapsed = time.perf_counter() - command_start
-        s, r, _, _ = env.step(action.numpy())
+        s, r, _, _ = env.step(action.cpu().numpy())
         total_reward += r
         logger.debug("action taken: %.4f cost received: %.4f time taken: %.5fs", action, -r, elapsed)
         if render:
