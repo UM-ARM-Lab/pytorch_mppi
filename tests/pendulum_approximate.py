@@ -15,11 +15,11 @@ logging.basicConfig(level=logging.INFO,
 if __name__ == "__main__":
     ENV_NAME = "Pendulum-v0"
     TIMESTEPS = 30  # T
-    N_SAMPLES = 10000  # K
+    N_SAMPLES = 1000  # K
     ACTION_LOW = -2.0
     ACTION_HIGH = 2.0
 
-    d = "cuda:0"
+    d = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     dtype = torch.double
 
     noise_sigma = torch.tensor(1, device=d, dtype=dtype)
@@ -195,6 +195,7 @@ if __name__ == "__main__":
 
     nx = 2
     mppi_gym = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
-                         lambda_=lambda_, device=d)
+                         lambda_=lambda_, device=d, u_min=torch.tensor(ACTION_LOW, dtype=torch.double, device=d),
+                         u_max=torch.tensor(ACTION_HIGH, dtype=torch.double, device=d))
     total_reward, data = mppi.run_mppi(mppi_gym, env, train)
     logger.info("Total reward %f", total_reward)
