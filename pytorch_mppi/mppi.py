@@ -92,6 +92,33 @@ class MPPI():
         self.terminal_state_cost = terminal_state_cost
         self.state = None
 
+    def command(self, state):
+        """
+        :param state: (nx) or (K x nx) current state, or samples of states (for propagating a distribution of states)
+        :returns action: (nu) best action
+        """
+
+        if not torch.is_tensor(state):
+            state = torch.tensor(state)
+        self.state = state.to(dtype=self.dtype, device=self.d)
+
+        cost_total = self._compute_total_cost_batch()
+
+        beta = torch.min(cost_total)
+        cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
+
+        eta = torch.sum(cost_total_non_zero)
+        omega = (1. / eta) * cost_total_non_zero
+        for t in range(self.T):
+            self.U[t] += torch.sum(omega.view(-1, 1) * self.noise[:, t], dim=0)
+        action = self.U[0]
+
+        # shift command 1 time step
+        self.U = torch.roll(self.U, -1, dims=0)
+        self.U[-1] = self.u_init
+
+        return action
+
     def _compute_total_cost_batch(self):
         # parallelize sampling across trajectories
         cost_total = torch.zeros(self.K, device=self.d, dtype=self.dtype)
@@ -133,33 +160,6 @@ class MPPI():
 
     def _slice_control(self, t):
         return slice(t * self.nu, (t + 1) * self.nu)
-
-    def command(self, state):
-        """
-        :param state: (nx) or (K x nx) current state, or samples of states (for propagating a distribution of states)
-        :returns action: (nu) best action
-        """
-
-        if not torch.is_tensor(state):
-            state = torch.tensor(state)
-        self.state = state.to(dtype=self.dtype, device=self.d)
-
-        cost_total = self._compute_total_cost_batch()
-
-        beta = torch.min(cost_total)
-        cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
-
-        eta = torch.sum(cost_total_non_zero)
-        omega = (1. / eta) * cost_total_non_zero
-        for t in range(self.T):
-            self.U[t] += torch.sum(omega.view(-1, 1) * self.noise[:, t], dim=0)
-        action = self.U[0]
-
-        # shift command 1 time step
-        self.U = torch.roll(self.U, -1, dims=0)
-        self.U[-1] = self.u_init
-
-        return action
 
 
 def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000, render=True):
