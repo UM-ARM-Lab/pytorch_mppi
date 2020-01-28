@@ -119,6 +119,12 @@ class MPPI():
 
         return action
 
+    def reset(self):
+        """
+        Clear controller state after finishing a trial
+        """
+        self.U = self.noise_dist.sample((self.T,))
+
     def _compute_total_cost_batch(self):
         # parallelize sampling across trajectories
         cost_total = torch.zeros(self.K, device=self.d, dtype=self.dtype)
