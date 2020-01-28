@@ -136,8 +136,8 @@ class MPPI():
 
     def command(self, state):
         """
-            :param state: Should be nx or K x nx (for sampling from initial state distribution)
-            :returns action: best action nu
+        :param state: (nx) or (K x nx) current state, or samples of states (for propagating a distribution of states)
+        :returns action: (nu) best action
         """
 
         if not torch.is_tensor(state):
