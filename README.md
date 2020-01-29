@@ -12,7 +12,33 @@ such as the Cross Entropy Method (CEM), or random shooting.
 Clone repository somewhere, then `pip3 install -e .` to install in editable mode.
 See `tests/pendulum_approximate.py` for usage with a neural network approximating
 the pendulum dynamics. See the `not_batch` branch for an easier to read
-algorithm.
+algorithm. Basic use case is shown below
+
+```python
+# create controller with chosen parameters
+ctrl = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
+                         lambda_=lambda_, device=d, 
+                         u_min=torch.tensor(ACTION_LOW, dtype=torch.double, device=d),
+                         u_max=torch.tensor(ACTION_HIGH, dtype=torch.double, device=d))
+
+# assuming you have a gym-like env
+obs = env.reset()
+for i in range(100):
+    action = ctrl.command(obs)
+    obs, reward, done, _ = env.step(action.cpu().numpy())
+```
+
+# Parameter tuning and hints
+`lambda_` - higher values increases the cost of control noise, so you end up with more
+samples around the mean; generally lower values work better (try `1e-2`)
+
+`num_samples` - number of trajectories to sample; generally the more the better.
+Runtime performance scales much better with `num_samples` than `horizon`, especially
+if you're using a GPU device (remember to pass that in!)
+
+`noise_mu` - the default is 0 for all control dimensions, which may work out
+really poorly if you have control bounds and the allowed range is not 0-centered.
+Remember to change this to an appropriate value for non-symmetric control dimensions.
 
 # Requirements
 - pytorch (>= 1.0)
@@ -24,6 +50,7 @@ algorithm.
 # Features
 - Approximate dynamics MPPI with importance sampling
 - Parallel/batch pytorch implementation for accelerated sampling
+- Control bounds via sampling control noise from rectified gaussian 
 
 # Tests
 Under `tests` you can find the `MPPI` method applied to known pendulum dynamics
