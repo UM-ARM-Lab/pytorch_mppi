@@ -55,7 +55,11 @@ Remember to change this to an appropriate value for non-symmetric control dimens
 # Tests
 Under `tests` you can find the `MPPI` method applied to known pendulum dynamics
 and approximate pendulum dynamics (with a 2 layer feedforward net 
-estimating the state residual).
+estimating the state residual). Using a continuous angle representation
+(feeding `cos(\theta), sin(\theta)` instead of `\theta` directly) makes
+a huge difference. Although both works, the continuous representation
+is much more robust to controller parameters and random seed. In addition,
+the problem of continuing to spin after over-swinging does not appear.
 
 Sample result on approximate dynamics with 100 steps of random policy data
 to initialize the dynamics:
