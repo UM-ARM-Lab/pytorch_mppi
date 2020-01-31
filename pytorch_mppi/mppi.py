@@ -11,7 +11,8 @@ def _ensure_non_zero(cost, beta, factor):
 
 
 class MPPI():
-    """ Model Predictive Path Integral control
+    """
+    Model Predictive Path Integral control
     This implementation batch samples the trajectories and so scales well with the number of samples K.
 
     Implemented according to algorithm 2 in Williams et al., 2017
