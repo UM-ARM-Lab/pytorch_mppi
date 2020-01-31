@@ -15,6 +15,7 @@ the pendulum dynamics. See the `not_batch` branch for an easier to read
 algorithm. Basic use case is shown below
 
 ```python
+from pytorch_mppi import mppi
 # create controller with chosen parameters
 ctrl = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
                          lambda_=lambda_, device=d, 
