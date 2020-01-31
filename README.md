@@ -66,3 +66,7 @@ Sample result on approximate dynamics with 100 steps of random policy data
 to initialize the dynamics:
 
 ![pendulum results](https://i.imgur.com/euYQJ25.gif)
+
+# Related projects
+- [pytorch CEM](https://github.com/LemonPi/pytorch_cem) - an alternative MPC shooting method with similar API as this
+project
