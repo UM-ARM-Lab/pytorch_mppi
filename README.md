@@ -54,6 +54,8 @@ Remember to change this to an appropriate value for non-symmetric control dimens
 - Control bounds via sampling control noise from rectified gaussian 
 
 # Tests
+You'll need to install `gym` to run the tests (for the pendulum environment).
+
 Under `tests` you can find the `MPPI` method applied to known pendulum dynamics
 and approximate pendulum dynamics (with a 2 layer feedforward net 
 estimating the state residual). Using a continuous angle representation

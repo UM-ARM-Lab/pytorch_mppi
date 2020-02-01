@@ -11,5 +11,9 @@ setup(
     description='Model Predictive Path Integral (MPPI) implemented in pytorch',
     install_requires=[
         'torch',
+        'numpy'
+    ],
+    tests_require=[
+        'gym'
     ]
 )
