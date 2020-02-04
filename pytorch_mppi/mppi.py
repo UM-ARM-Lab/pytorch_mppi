@@ -90,14 +90,27 @@ class MPPI():
 
         # broadcast own control to noise over samples; now it's K x T x nu
         perturbed_action = self.U + self.noise
+        states = []
+        actions = []
         for t in range(self.T):
             u = perturbed_action[:, t]
             state = self.F(state, u)
-            cost_total += self.running_cost(state, u)
+            if self.running_cost:
+                cost_total += self.running_cost(state, u)
+
+            # Save total states/actions
+            states.append(state)
+            actions.append(u)
+
+        # Actions is N x T x nu
+        # States is N x T x nx
+        actions = torch.stack(actions, dim=1)
+        states = torch.stack(states, dim=1)
+
         # action perturbation cost
         perturbation_cost = torch.sum(perturbed_action * self.action_cost, dim=(1, 2))
         if self.terminal_state_cost:
-            cost_total += self.terminal_state_cost(state)
+            cost_total += self.terminal_state_cost(states, actions)
         cost_total += perturbation_cost
         return cost_total
 
