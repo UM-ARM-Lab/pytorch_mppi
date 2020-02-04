@@ -1,3 +1,7 @@
+"""
+Same as approximate dynamics, but now the input is sine and cosine of theta (output is still dtheta)
+This is a continuous representation of theta, which some papers show is easier for a NN to learn.
+"""
 import gym
 import numpy as np
 import torch
@@ -14,8 +18,8 @@ logging.basicConfig(level=logging.INFO,
 
 if __name__ == "__main__":
     ENV_NAME = "Pendulum-v0"
-    TIMESTEPS = 30  # T
-    N_SAMPLES = 1000  # K
+    TIMESTEPS = 15  # T
+    N_SAMPLES = 100  # K
     ACTION_LOW = -2.0
     ACTION_HIGH = 2.0
 
@@ -28,7 +32,7 @@ if __name__ == "__main__":
 
     import random
 
-    randseed = 25
+    randseed = 24
     if randseed is None:
         randseed = random.randint(0, 1000000)
     random.seed(randseed)
@@ -45,7 +49,7 @@ if __name__ == "__main__":
     nu = 1
     # network output is state residual
     network = torch.nn.Sequential(
-        torch.nn.Linear(nx + nu, H_UNITS),
+        torch.nn.Linear(nx + nu + 1, H_UNITS),
         torch.nn.Tanh(),
         torch.nn.Linear(H_UNITS, H_UNITS),
         torch.nn.Tanh(),
@@ -61,7 +65,10 @@ if __name__ == "__main__":
         if u.shape[1] > 1:
             u = u[:, 0].view(-1, 1)
         xu = torch.cat((state, u), dim=1)
+        # feed in cosine and sine of angle instead of theta
+        xu = torch.cat((torch.sin(xu[:, 0]).view(-1, 1), torch.cos(xu[:, 0]).view(-1, 1), xu[:, 1:]), dim=1)
         state_residual = network(xu)
+        # output dtheta directly so can just add
         next_state = state + state_residual
         next_state[:, 0] = angle_normalize(next_state[:, 0])
         return next_state
@@ -136,7 +143,8 @@ if __name__ == "__main__":
         dtheta = angular_diff_batch(XU[1:, 0], XU[:-1, 0])
         dtheta_dt = XU[1:, 1] - XU[:-1, 1]
         Y = torch.cat((dtheta.view(-1, 1), dtheta_dt.view(-1, 1)), dim=1)  # x' - x residual
-        XU = XU[:-1]  # make same size as Y
+        xu = XU[:-1]  # make same size as Y
+        xu = torch.cat((torch.sin(xu[:, 0]).view(-1, 1), torch.cos(xu[:, 0]).view(-1, 1), xu[:, 1:]), dim=1)
 
         # thaw network
         for param in network.parameters():
@@ -146,7 +154,7 @@ if __name__ == "__main__":
         for epoch in range(TRAIN_EPOCH):
             optimizer.zero_grad()
             # MSE loss
-            Yhat = network(XU)
+            Yhat = network(xu)
             loss = (Y - Yhat).norm(2, dim=1) ** 2
             loss.mean().backward()
             optimizer.step()
