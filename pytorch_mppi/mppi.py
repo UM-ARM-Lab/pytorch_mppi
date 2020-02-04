@@ -27,7 +27,8 @@ class MPPI():
                  u_min=None,
                  u_max=None,
                  u_init=None,
-                 U_init=None):
+                 U_init=None,
+                 sample_null_action=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
         :param running_cost: function(state, action) -> cost (K x 1) taking in batch state and action (same as dynamics)
@@ -43,6 +44,7 @@ class MPPI():
         :param u_max: (nu) maximum values for each dimension of control to pass into dynamics
         :param u_init: (nu) what to initialize new end of trajectory control to be; defeaults to zero
         :param U_init: (T x nu) initial control sequence; defaults to noise
+        :param sample_null_action: Whether to explicitly sample a null action (bad for starting in a local minima)
         """
         self.d = device
         self.dtype = noise_sigma.dtype
@@ -91,6 +93,7 @@ class MPPI():
         self.F = dynamics
         self.running_cost = running_cost
         self.terminal_state_cost = terminal_state_cost
+        self.sample_null_action = sample_null_action
         self.state = None
 
     def command(self, state):
@@ -140,6 +143,8 @@ class MPPI():
         self.noise = self.noise_dist.sample((self.K, self.T))
         # broadcast own control to noise over samples; now it's K x T x nu
         perturbed_action = self.U + self.noise
+        if self.sample_null_action:
+            perturbed_action[self.K - 1] = 0
         # naively bound control
         perturbed_action = self._bound_action(perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
