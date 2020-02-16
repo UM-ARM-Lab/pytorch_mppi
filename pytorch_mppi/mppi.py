@@ -28,6 +28,7 @@ class MPPI():
                  u_max=None,
                  u_init=None,
                  U_init=None,
+                 step_dependent_dynamics=False,
                  sample_null_action=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
@@ -44,6 +45,7 @@ class MPPI():
         :param u_max: (nu) maximum values for each dimension of control to pass into dynamics
         :param u_init: (nu) what to initialize new end of trajectory control to be; defeaults to zero
         :param U_init: (T x nu) initial control sequence; defaults to noise
+        :param step_dependent_dynamics: whether the passed in dynamics needs horizon step passed in (as 3rd arg)
         :param sample_null_action: Whether to explicitly sample a null action (bad for starting in a local minima)
         """
         self.d = device
@@ -90,11 +92,15 @@ class MPPI():
         if self.U is None:
             self.U = self.noise_dist.sample((self.T,))
 
+        self.step_dependency = step_dependent_dynamics
         self.F = dynamics
         self.running_cost = running_cost
         self.terminal_state_cost = terminal_state_cost
         self.sample_null_action = sample_null_action
         self.state = None
+
+    def _dynamics(self, state, u, t):
+        return self.F(state, u, t) if self.step_dependency else self.F(state, u)
 
     def command(self, state):
         """
@@ -155,7 +161,7 @@ class MPPI():
         actions = []
         for t in range(self.T):
             u = perturbed_action[:, t]
-            state = self.F(state, u)
+            state = self._dynamics(state, u, t)
             if self.running_cost:
                 cost_total += self.running_cost(state, u)
 
@@ -202,7 +208,7 @@ class MPPI():
         states = torch.zeros((num_rollouts, T + 1, self.nx), dtype=self.U.dtype, device=self.U.device)
         states[:, 0] = state
         for t in range(T):
-            states[:, t + 1] = self.F(states[:, t].view(num_rollouts, -1), self.U[t].view(num_rollouts, -1))
+            states[:, t + 1] = self._dynamics(states[:, t].view(num_rollouts, -1), self.U[t].view(num_rollouts, -1), t)
         return states[:, 1:]
 
 
