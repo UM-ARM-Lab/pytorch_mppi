@@ -107,6 +107,9 @@ class MPPI():
         :param state: (nx) or (K x nx) current state, or samples of states (for propagating a distribution of states)
         :returns action: (nu) best action
         """
+        # shift command 1 time step
+        self.U = torch.roll(self.U, -1, dims=0)
+        self.U[-1] = self.u_init
 
         if not torch.is_tensor(state):
             state = torch.tensor(state)
@@ -122,10 +125,6 @@ class MPPI():
         for t in range(self.T):
             self.U[t] += torch.sum(omega.view(-1, 1) * self.noise[:, t], dim=0)
         action = self.U[0]
-
-        # shift command 1 time step
-        self.U = torch.roll(self.U, -1, dims=0)
-        self.U[-1] = self.u_init
 
         return action
 
