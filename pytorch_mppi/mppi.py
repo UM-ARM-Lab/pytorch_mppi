@@ -29,6 +29,8 @@ class MPPI():
                  u_init=None,
                  U_init=None,
                  step_dependent_dynamics=False,
+                 dynamics_variance=None,
+                 running_cost_variance=None,
                  sample_null_action=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
@@ -46,6 +48,8 @@ class MPPI():
         :param u_init: (nu) what to initialize new end of trajectory control to be; defeaults to zero
         :param U_init: (T x nu) initial control sequence; defaults to noise
         :param step_dependent_dynamics: whether the passed in dynamics needs horizon step passed in (as 3rd arg)
+        :param dynamics_variance: function(state) -> variance (K x nx) give variance of the state calcualted from dynamics
+        :param running_cost_variance: function(variance) -> cost (K x 1) cost function on the state variances
         :param sample_null_action: Whether to explicitly sample a null action (bad for starting in a local minima)
         """
         self.d = device
@@ -94,10 +98,14 @@ class MPPI():
 
         self.step_dependency = step_dependent_dynamics
         self.F = dynamics
+        self.dynamics_variance = dynamics_variance
         self.running_cost = running_cost
+        self.running_cost_variance = running_cost_variance
         self.terminal_state_cost = terminal_state_cost
         self.sample_null_action = sample_null_action
         self.state = None
+        if self.dynamics_variance is not None and self.running_cost_variance is None:
+            raise RuntimeError("Need to give running cost for variance when giving the dynamics variance")
 
     def _dynamics(self, state, u, t):
         return self.F(state, u, t) if self.step_dependency else self.F(state, u)
@@ -162,6 +170,8 @@ class MPPI():
             u = perturbed_action[:, t]
             state = self._dynamics(state, u, t)
             cost_total += self.running_cost(state, u)
+            if self.dynamics_variance is not None:
+                cost_total += self.running_cost_variance(self.dynamics_variance(state))
 
             # Save total states/actions
             states.append(state)
