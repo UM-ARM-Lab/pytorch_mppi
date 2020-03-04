@@ -161,8 +161,7 @@ class MPPI():
         for t in range(self.T):
             u = perturbed_action[:, t]
             state = self._dynamics(state, u, t)
-            if self.running_cost:
-                cost_total += self.running_cost(state, u)
+            cost_total += self.running_cost(state, u)
 
             # Save total states/actions
             states.append(state)
