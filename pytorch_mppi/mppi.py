@@ -155,19 +155,19 @@ class MPPI():
         # resample noise each time we take an action
         self.noise = self.noise_dist.sample((self.K, self.T))
         # broadcast own control to noise over samples; now it's K x T x nu
-        perturbed_action = self.U + self.noise
+        self.perturbed_action = self.U + self.noise
         if self.sample_null_action:
-            perturbed_action[self.K - 1] = 0
+            self.perturbed_action[self.K - 1] = 0
         # naively bound control
-        perturbed_action = self._bound_action(perturbed_action)
+        self.perturbed_action = self._bound_action(self.perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
-        self.noise = perturbed_action - self.U
+        self.noise = self.perturbed_action - self.U
         action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv
 
         states = []
         actions = []
         for t in range(self.T):
-            u = perturbed_action[:, t]
+            u = self.perturbed_action[:, t]
             state = self._dynamics(state, u, t)
             cost_total += self.running_cost(state, u)
             if self.dynamics_variance is not None:
@@ -183,7 +183,7 @@ class MPPI():
         states = torch.stack(states, dim=1)
 
         # action perturbation cost
-        perturbation_cost = torch.sum(perturbed_action * action_cost, dim=(1, 2))
+        perturbation_cost = torch.sum(self.perturbed_action * action_cost, dim=(1, 2))
         if self.terminal_state_cost:
             cost_total += self.terminal_state_cost(states, actions)
         cost_total += perturbation_cost
