@@ -106,6 +106,9 @@ class MPPI():
         self.state = None
 
         # sampled results from last command
+        self.cost_total = None
+        self.cost_total_non_zero = None
+        self.omega = None
         self.states = None
         self.actions = None
         if self.dynamics_variance is not None and self.running_cost_variance is None:
@@ -130,12 +133,12 @@ class MPPI():
         cost_total = self._compute_total_cost_batch()
 
         beta = torch.min(cost_total)
-        cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
+        self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
 
-        eta = torch.sum(cost_total_non_zero)
-        omega = (1. / eta) * cost_total_non_zero
+        eta = torch.sum(self.cost_total_non_zero)
+        self.omega = (1. / eta) * self.cost_total_non_zero
         for t in range(self.T):
-            self.U[t] += torch.sum(omega.view(-1, 1) * self.noise[:, t], dim=0)
+            self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
         action = self.U[0]
 
         return action
@@ -148,7 +151,7 @@ class MPPI():
 
     def _compute_total_cost_batch(self):
         # parallelize sampling across trajectories
-        cost_total = torch.zeros(self.K, device=self.d, dtype=self.dtype)
+        self.cost_total = torch.zeros(self.K, device=self.d, dtype=self.dtype)
 
         # allow propagation of a sample of states (ex. to carry a distribution), or to start with a single state
         if self.state.shape == (self.K, self.nx):
@@ -173,9 +176,9 @@ class MPPI():
         for t in range(self.T):
             u = self.perturbed_action[:, t]
             state = self._dynamics(state, u, t)
-            cost_total += self.running_cost(state, u)
+            self.cost_total += self.running_cost(state, u)
             if self.dynamics_variance is not None:
-                cost_total += self.running_cost_variance(self.dynamics_variance(state))
+                self.cost_total += self.running_cost_variance(self.dynamics_variance(state))
 
             # Save total states/actions
             self.states.append(state)
@@ -189,9 +192,9 @@ class MPPI():
         # action perturbation cost
         perturbation_cost = torch.sum(self.perturbed_action * action_cost, dim=(1, 2))
         if self.terminal_state_cost:
-            cost_total += self.terminal_state_cost(self.states, self.actions)
-        cost_total += perturbation_cost
-        return cost_total
+            self.cost_total += self.terminal_state_cost(self.states, self.actions)
+        self.cost_total += perturbation_cost
+        return self.cost_total
 
     def _bound_action(self, action):
         if self.u_max is not None:
