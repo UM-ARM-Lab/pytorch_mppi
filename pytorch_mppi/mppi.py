@@ -104,6 +104,10 @@ class MPPI():
         self.terminal_state_cost = terminal_state_cost
         self.sample_null_action = sample_null_action
         self.state = None
+
+        # sampled results from last command
+        self.states = None
+        self.actions = None
         if self.dynamics_variance is not None and self.running_cost_variance is None:
             raise RuntimeError("Need to give running cost for variance when giving the dynamics variance")
 
@@ -164,8 +168,8 @@ class MPPI():
         self.noise = self.perturbed_action - self.U
         action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv
 
-        states = []
-        actions = []
+        self.states = []
+        self.actions = []
         for t in range(self.T):
             u = self.perturbed_action[:, t]
             state = self._dynamics(state, u, t)
@@ -174,18 +178,18 @@ class MPPI():
                 cost_total += self.running_cost_variance(self.dynamics_variance(state))
 
             # Save total states/actions
-            states.append(state)
-            actions.append(u)
+            self.states.append(state)
+            self.actions.append(u)
 
         # Actions is N x T x nu
         # States is N x T x nx
-        actions = torch.stack(actions, dim=1)
-        states = torch.stack(states, dim=1)
+        self.actions = torch.stack(self.actions, dim=1)
+        self.states = torch.stack(self.states, dim=1)
 
         # action perturbation cost
         perturbation_cost = torch.sum(self.perturbed_action * action_cost, dim=(1, 2))
         if self.terminal_state_cost:
-            cost_total += self.terminal_state_cost(states, actions)
+            cost_total += self.terminal_state_cost(self.states, self.actions)
         cost_total += perturbation_cost
         return cost_total
 
