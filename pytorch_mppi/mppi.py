@@ -154,7 +154,7 @@ class MPPI():
         actions = self.U[:self.u_per_command]
 
         rollout = self.get_rollouts(state)
-        return action, rollout
+        return actions, rollout
 
     def reset(self):
         """
