@@ -188,7 +188,8 @@ class MPPI():
         for t in range(self.T):
             u = self.u_scale * self.perturbed_action[:, t]
             state = self._dynamics(state, u, t)
-            self.cost_total += self.running_cost(state, u)
+            if self.running_cost is not None:
+                self.cost_total += self.running_cost(state, u)
             if self.dynamics_variance is not None:
                 self.cost_total += self.running_cost_variance(self.dynamics_variance(state))
 
