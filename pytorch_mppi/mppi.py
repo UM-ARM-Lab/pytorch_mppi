@@ -83,13 +83,17 @@ class MPPI():
         # make sure if any of them is specified, both are specified
         if self.u_max is not None and self.u_min is None:
             if not torch.is_tensor(self.u_max):
-                self.u_max = torch.tensor(self.u_max)
+                self.u_max = torch.tensor(self.u_max, dtype=self.dtype)
             self.u_min = -self.u_max
         if self.u_min is not None and self.u_max is None:
             if not torch.is_tensor(self.u_min):
-                self.u_min = torch.tensor(self.u_min)
+                self.u_min = torch.tensor(self.u_min, dtype=self.dtype)
             self.u_max = -self.u_min
         if self.u_min is not None:
+            if not torch.is_tensor(self.u_min):
+                self.u_min = torch.tensor(self.u_min, dtype=self.dtype)
+            if not torch.is_tensor(self.u_max):
+                self.u_max = torch.tensor(self.u_max, dtype=self.dtype)
             self.u_min = self.u_min.to(device=self.d)
             self.u_max = self.u_max.to(device=self.d)
 
