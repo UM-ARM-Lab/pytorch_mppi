@@ -28,6 +28,8 @@ class MPPI():
                  u_max=None,
                  u_init=None,
                  U_init=None,
+                 u_scale=1,
+                 u_per_command=1,
                  step_dependent_dynamics=False,
                  dynamics_variance=None,
                  running_cost_variance=None,
@@ -76,6 +78,8 @@ class MPPI():
         # bounds
         self.u_min = u_min
         self.u_max = u_max
+        self.u_scale = u_scale
+        self.u_per_command = u_per_command
         # make sure if any of them is specified, both are specified
         if self.u_max is not None and self.u_min is None:
             self.u_min = -self.u_max
@@ -139,7 +143,7 @@ class MPPI():
         self.omega = (1. / eta) * self.cost_total_non_zero
         for t in range(self.T):
             self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
-        action = self.U[0]
+        action = self.U[:self.u_per_command]
 
         return action
 
@@ -174,7 +178,7 @@ class MPPI():
         self.states = []
         self.actions = []
         for t in range(self.T):
-            u = self.perturbed_action[:, t]
+            u = self.u_scale * self.perturbed_action[:, t]
             state = self._dynamics(state, u, t)
             self.cost_total += self.running_cost(state, u)
             if self.dynamics_variance is not None:
@@ -190,9 +194,11 @@ class MPPI():
         self.states = torch.stack(self.states, dim=1)
 
         # action perturbation cost
-        perturbation_cost = torch.sum(self.perturbed_action * action_cost, dim=(1, 2))
         if self.terminal_state_cost:
-            self.cost_total += self.terminal_state_cost(self.states, self.actions)
+            terminal_cost, self.actions = self.terminal_state_cost(self.states, self.actions)
+            self.cost_total += terminal_cost
+        self.actions /= self.u_scale
+        perturbation_cost = torch.sum(self.actions * action_cost, dim=(1, 2))
         self.cost_total += perturbation_cost
         return self.cost_total
 
@@ -223,7 +229,8 @@ class MPPI():
         states = torch.zeros((num_rollouts, T + 1, self.nx), dtype=self.U.dtype, device=self.U.device)
         states[:, 0] = state
         for t in range(T):
-            states[:, t + 1] = self._dynamics(states[:, t].view(num_rollouts, -1), self.U[t].view(num_rollouts, -1), t)
+            states[:, t + 1] = self._dynamics(states[:, t].view(num_rollouts, -1),
+                                              self.u_scale * self.U[t].view(num_rollouts, -1), t)
         return states[:, 1:]
 
 
