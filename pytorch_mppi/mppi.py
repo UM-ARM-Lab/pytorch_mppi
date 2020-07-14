@@ -151,9 +151,10 @@ class MPPI():
         self.omega = (1. / eta) * self.cost_total_non_zero
         for t in range(self.T):
             self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
-        action = self.U[:self.u_per_command]
+        actions = self.U[:self.u_per_command]
 
-        return action
+        rollout = self.get_rollouts(state)
+        return action, rollout
 
     def reset(self):
         """
