@@ -151,9 +151,10 @@ class MPPI():
         self.omega = (1. / eta) * self.cost_total_non_zero
         for t in range(self.T):
             self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
-        actions = self.U[:self.u_per_command]
+        actions = self.u_scale * self.U[:self.u_per_command]
 
         rollout = self.get_rollouts(state)
+
         return actions, rollout
 
     def reset(self):
@@ -179,7 +180,8 @@ class MPPI():
         if self.sample_null_action:
             self.perturbed_action[self.K - 1] = 0
         # naively bound control
-        self.perturbed_action = self._bound_action(self.perturbed_action)
+        #self.perturbed_action = self._bound_action(self.perturbed_action)
+        self.perturbed_action = self.perturbed_action.clamp(min=self.u_min, max=self.u_max)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.noise = self.perturbed_action - self.U
         action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv
