@@ -71,8 +71,6 @@ class MPPI():
                  u_scale=1,
                  u_per_command=1,
                  step_dependent_dynamics=False,
-                 dynamics_variance=None,
-                 running_cost_variance=None,
                  rollout_samples=1,
                  rollout_var_cost=0,
                  rollout_var_discount=0.95,
@@ -93,8 +91,6 @@ class MPPI():
         :param u_init: (nu) what to initialize new end of trajectory control to be; defeaults to zero
         :param U_init: (T x nu) initial control sequence; defaults to noise
         :param step_dependent_dynamics: whether the passed in dynamics needs horizon step passed in (as 3rd arg)
-        :param dynamics_variance: function(state) -> variance (K x nx) give variance of the state calcualted from dynamics
-        :param running_cost_variance: function(variance) -> cost (K x 1) cost function on the state variances
         :param rollout_samples: M, number of state trajectories to rollout for each control trajectory
             (should be 1 for deterministic dynamics and more for models that output a distribution)
         :param rollout_var_cost: Cost attached to the variance of costs across trajectory rollouts
@@ -153,9 +149,7 @@ class MPPI():
 
         self.step_dependency = step_dependent_dynamics
         self.F = dynamics
-        self.dynamics_variance = dynamics_variance
         self.running_cost = running_cost
-        self.running_cost_variance = running_cost_variance
         self.terminal_state_cost = terminal_state_cost
         self.sample_null_action = sample_null_action
         self.state = None
@@ -171,8 +165,6 @@ class MPPI():
         self.omega = None
         self.states = None
         self.actions = None
-        if self.dynamics_variance is not None and self.running_cost_variance is None:
-            raise RuntimeError("Need to give running cost for variance when giving the dynamics variance")
 
     @handle_batch_input
     def _dynamics(self, state, u, t):
@@ -243,8 +235,6 @@ class MPPI():
             cost_samples += c
             if self.M > 1:
                 cost_var += c.var(dim=0) * (self.rollout_var_discount ** t)
-            if self.dynamics_variance is not None:
-                cost_total += self.running_cost_variance(self.dynamics_variance(state))
 
             # Save total states/actions
             states.append(state)
