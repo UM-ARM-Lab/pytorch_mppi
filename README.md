@@ -52,6 +52,8 @@ Remember to change this to an appropriate value for non-symmetric control dimens
 - Approximate dynamics MPPI with importance sampling
 - Parallel/batch pytorch implementation for accelerated sampling
 - Control bounds via sampling control noise from rectified gaussian 
+- Handle stochastic dynamic models (assuming each call is a sample) by sampling multiple state trajectories for the same
+action trajectory with `rollout_samples`
 
 # Tests
 You'll need to install `gym` to run the tests (for the pendulum environment).
