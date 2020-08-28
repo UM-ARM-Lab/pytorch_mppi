@@ -148,6 +148,9 @@ class MPPI():
         for t in range(self.T):
             self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
         action = self.U[:self.u_per_command]
+        # reduce dimensionality if we only need the first command
+        if self.u_per_command is 1:
+            action = action[0]
 
         return action
 
