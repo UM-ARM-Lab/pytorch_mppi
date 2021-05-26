@@ -111,7 +111,7 @@ if __name__ == "__main__":
         theta = state[:, 0]
         theta_dt = state[:, 1]
         action = action[:, 0]
-        cost = angle_normalize(theta) ** 2 + 0.1 * theta_dt ** 2 + 0.001 * action ** 2
+        cost = angle_normalize(theta) ** 2 + 0.1 * theta_dt ** 2
         return cost
 
 
