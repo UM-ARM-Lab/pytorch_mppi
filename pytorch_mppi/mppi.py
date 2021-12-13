@@ -77,7 +77,7 @@ class MPPI():
                  sample_null_action=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
-        :param running_cost: function(state, action) -> cost (K x 1) taking in batch state and action (same as dynamics)
+        :param running_cost: function(state, action) -> cost (K) taking in batch state and action (same as dynamics)
         :param nx: state dimension
         :param noise_sigma: (nu x nu) control noise covariance (assume v_t ~ N(u_t, noise_sigma))
         :param num_samples: K, number of trajectories to sample
