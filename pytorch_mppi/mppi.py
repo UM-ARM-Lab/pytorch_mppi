@@ -265,13 +265,16 @@ class MPPI():
         self.perturbed_action = self._bound_action(self.perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.noise = self.perturbed_action - self.U
-        action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv
+        action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
+        # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
+        # the actions with low noise if all states have the same cost. With abs(noise) we prefer actions close to the
+        # nomial trajectory.
 
         self.cost_total, self.states, self.actions = self._compute_rollout_costs(self.perturbed_action)
         self.actions /= self.u_scale
 
         # action perturbation cost
-        perturbation_cost = torch.sum(self.perturbed_action * action_cost, dim=(1, 2))
+        perturbation_cost = torch.sum(self.U * action_cost, dim=(1, 2))
         self.cost_total += perturbation_cost
         return self.cost_total
 
