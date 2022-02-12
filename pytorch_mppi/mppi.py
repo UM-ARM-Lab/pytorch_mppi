@@ -74,7 +74,8 @@ class MPPI():
                  rollout_samples=1,
                  rollout_var_cost=0,
                  rollout_var_discount=0.95,
-                 sample_null_action=False):
+                 sample_null_action=False,
+                 noise_abs_cost=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
         :param running_cost: function(state, action) -> cost (K) taking in batch state and action (same as dynamics)
@@ -96,6 +97,7 @@ class MPPI():
         :param rollout_var_cost: Cost attached to the variance of costs across trajectory rollouts
         :param rollout_var_discount: Discount of variance cost over control horizon
         :param sample_null_action: Whether to explicitly sample a null action (bad for starting in a local minima)
+        :param noise_abs_cost: Whether to use the absolute value of the action noise to avoid bias when all states have the same cost
         """
         self.d = device
         self.dtype = noise_sigma.dtype
@@ -152,6 +154,7 @@ class MPPI():
         self.running_cost = running_cost
         self.terminal_state_cost = terminal_state_cost
         self.sample_null_action = sample_null_action
+        self.noise_abs_cost = noise_abs_cost
         self.state = None
 
         # handling dynamics models that output a distribution (take multiple trajectory samples)
@@ -265,10 +268,13 @@ class MPPI():
         self.perturbed_action = self._bound_action(self.perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.noise = self.perturbed_action - self.U
-        action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
-        # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
-        # the actions with low noise if all states have the same cost. With abs(noise) we prefer actions close to the
-        # nomial trajectory.
+        if self.noise_abs_cost:
+            action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
+            # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
+            # the actions with low noise if all states have the same cost. With abs(noise) we prefer actions close to the
+            # nomial trajectory.
+        else:
+            action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv # Like original paper
 
         self.cost_total, self.states, self.actions = self._compute_rollout_costs(self.perturbed_action)
         self.actions /= self.u_scale
