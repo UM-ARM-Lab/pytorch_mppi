@@ -56,7 +56,9 @@ Remember to change this to an appropriate value for non-symmetric control dimens
 action trajectory with `rollout_samples`
 
 # Tests
-You'll need to install `gym` to run the tests (for the pendulum environment).
+You'll need to install `gym<=0.20` to run the tests (for the `Pendulum-v0` environment).
+The easy way to install this and other testing dependencies is running `python setup.py test`.
+Note that `gym` past `0.20` deprecated `Pendulum-v0` for `Pendulum-v1` with incompatible dynamics.
 
 Under `tests` you can find the `MPPI` method applied to known pendulum dynamics
 and approximate pendulum dynamics (with a 2 layer feedforward net 

@@ -106,7 +106,7 @@ class MPPI():
 
         # dimensions of state and control
         self.nx = nx
-        self.nu = 1 if len(noise_sigma.shape) is 0 else noise_sigma.shape[0]
+        self.nu = 1 if len(noise_sigma.shape) == 0 else noise_sigma.shape[0]
         self.lambda_ = lambda_
 
         if noise_mu is None:
@@ -116,7 +116,7 @@ class MPPI():
             u_init = torch.zeros_like(noise_mu)
 
         # handle 1D edge case
-        if self.nu is 1:
+        if self.nu == 1:
             noise_mu = noise_mu.view(-1)
             noise_sigma = noise_sigma.view(-1, 1)
 
@@ -201,7 +201,7 @@ class MPPI():
             self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
         action = self.U[:self.u_per_command]
         # reduce dimensionality if we only need the first command
-        if self.u_per_command is 1:
+        if self.u_per_command == 1:
             action = action[0]
 
         return action
