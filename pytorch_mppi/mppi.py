@@ -1,9 +1,10 @@
-import torch
-import time
-import logging
-from torch.distributions.multivariate_normal import MultivariateNormal
 import functools
+import logging
+import time
+
 import numpy as np
+import torch
+from torch.distributions.multivariate_normal import MultivariateNormal
 
 logger = logging.getLogger(__name__)
 
@@ -16,38 +17,63 @@ def is_tensor_like(x):
     return torch.is_tensor(x) or type(x) is np.ndarray
 
 
+def squeeze_n(v, n_squeeze):
+    for _ in range(n_squeeze):
+        v = v.squeeze(0)
+    return v
+
+
 # from arm_pytorch_utilities, standalone since that package is not on pypi yet
-def handle_batch_input(func):
-    """For func that expect 2D input, handle input that have more than 2 dimensions by flattening them temporarily"""
+def handle_batch_input(n):
+    def _handle_batch_input(func):
+        """For func that expect 2D input, handle input that have more than 2 dimensions by flattening them temporarily"""
 
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        # assume inputs that are tensor-like have compatible shapes and is represented by the first argument
-        batch_dims = []
-        for arg in args:
-            if is_tensor_like(arg) and len(arg.shape) > 2:
-                batch_dims = arg.shape[:-1]  # last dimension is type dependent; all previous ones are batches
-                break
-        # no batches; just return normally
-        if not batch_dims:
-            return func(*args, **kwargs)
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # assume inputs that are tensor-like have compatible shapes and is represented by the first argument
+            batch_dims = []
+            for arg in args:
+                if is_tensor_like(arg):
+                    if len(arg.shape) > n:
+                        # last dimension is type dependent; all previous ones are batches
+                        batch_dims = arg.shape[:-(n - 1)]
+                        break
+                    elif len(arg.shape) < n:
+                        n_batch_dims_to_add = n - len(arg.shape)
+                        batch_ones_to_add = [1] * n_batch_dims_to_add
+                        args = [v.view(*batch_ones_to_add, *v.shape) if is_tensor_like(v) else v for v in args]
+                        ret = func(*args, **kwargs)
+                        if isinstance(ret, tuple):
+                            ret = [squeeze_n(v, n_batch_dims_to_add) if is_tensor_like(v) else v for v in ret]
+                            return ret
+                        else:
+                            if is_tensor_like(ret):
+                                return squeeze_n(ret, n_batch_dims_to_add)
+                            else:
+                                return ret
+            # no batches; just return normally
+            if not batch_dims:
+                return func(*args, **kwargs)
 
-        # reduce all batch dimensions down to the first one
-        args = [v.view(-1, v.shape[-1]) if (is_tensor_like(v) and len(v.shape) > 2) else v for v in args]
-        ret = func(*args, **kwargs)
-        # restore original batch dimensions; keep variable dimension (nx)
-        if type(ret) is tuple:
-            ret = [v if (not is_tensor_like(v) or len(v.shape) == 0) else (
-                v.view(*batch_dims, v.shape[-1]) if len(v.shape) == 2 else v.view(*batch_dims)) for v in ret]
-        else:
-            if is_tensor_like(ret):
-                if len(ret.shape) == 2:
-                    ret = ret.view(*batch_dims, ret.shape[-1])
-                else:
-                    ret = ret.view(*batch_dims)
-        return ret
+            # reduce all batch dimensions down to the first one
+            args = [v.view(-1, *v.shape[-(n - 1):]) if (is_tensor_like(v) and len(v.shape) > 2) else v for v in args]
+            ret = func(*args, **kwargs)
+            # restore original batch dimensions; keep variable dimension (nx)
+            if type(ret) is tuple:
+                ret = [v if (not is_tensor_like(v) or len(v.shape) == 0) else (
+                    v.view(*batch_dims, *v.shape[-(n - 1):]) if len(v.shape) == n else v.view(*batch_dims)) for v in
+                       ret]
+            else:
+                if is_tensor_like(ret):
+                    if len(ret.shape) == n:
+                        ret = ret.view(*batch_dims, *ret.shape[-(n - 1):])
+                    else:
+                        ret = ret.view(*batch_dims)
+            return ret
 
-    return wrapper
+        return wrapper
+
+    return _handle_batch_input
 
 
 class MPPI():
@@ -169,11 +195,11 @@ class MPPI():
         self.states = None
         self.actions = None
 
-    @handle_batch_input
+    @handle_batch_input(n=2)
     def _dynamics(self, state, u, t):
         return self.F(state, u, t) if self.step_dependency else self.F(state, u)
 
-    @handle_batch_input
+    @handle_batch_input(n=2)
     def _running_cost(self, state, u):
         return self.running_cost(state, u)
 
@@ -186,15 +212,15 @@ class MPPI():
         self.U = torch.roll(self.U, -1, dims=0)
         self.U[-1] = self.u_init
 
+        return self._command(state)
+
+    def _command(self, state):
         if not torch.is_tensor(state):
             state = torch.tensor(state)
         self.state = state.to(dtype=self.dtype, device=self.d)
-
         cost_total = self._compute_total_cost_batch()
-
         beta = torch.min(cost_total)
         self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
-
         eta = torch.sum(self.cost_total_non_zero)
         self.omega = (1. / eta) * self.cost_total_non_zero
         for t in range(self.T):
@@ -203,7 +229,6 @@ class MPPI():
         # reduce dimensionality if we only need the first command
         if self.u_per_command == 1:
             action = action[0]
-
         return action
 
     def reset(self):
@@ -274,7 +299,7 @@ class MPPI():
             # the actions with low noise if all states have the same cost. With abs(noise) we prefer actions close to the
             # nomial trajectory.
         else:
-            action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv # Like original paper
+            action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv  # Like original paper
 
         self.cost_total, self.states, self.actions = self._compute_rollout_costs(self.perturbed_action)
         self.actions /= self.u_scale
