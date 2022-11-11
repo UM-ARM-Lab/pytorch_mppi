@@ -30,6 +30,11 @@ for i in range(100):
 ```
 
 # Parameter tuning and hints
+`terminal_state_cost` - function(state (K x T x nx)) -> cost (K x 1) by default there is no terminal
+cost, but if you experience your trajectory getting close to but never quite reaching the goal, then
+having a terminal cost can help. The function should scale with the horizon (T) to keep up with the
+scaling of the running cost.
+
 `lambda_` - higher values increases the cost of control noise, so you end up with more
 samples around the mean; generally lower values work better (try `1e-2`)
 
