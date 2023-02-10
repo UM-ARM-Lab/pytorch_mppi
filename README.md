@@ -8,8 +8,20 @@ using importance sampling.
 Thus it can be used in place of other trajectory optimization methods
 such as the Cross Entropy Method (CEM), or random shooting.
 
+# Installation
+```shell
+pip install pytorch-mppi
+```
+for running tests, install with
+```shell
+pip install pytorch-mppi[test]
+```
+for development, clone the repository then install in editable mode
+```shell
+pip install -e .
+```
+
 # Usage
-Clone repository somewhere, then `pip3 install -e .` to install in editable mode.
 See `tests/pendulum_approximate.py` for usage with a neural network approximating
 the pendulum dynamics. See the `not_batch` branch for an easier to read
 algorithm. Basic use case is shown below
