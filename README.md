@@ -27,12 +27,13 @@ the pendulum dynamics. See the `not_batch` branch for an easier to read
 algorithm. Basic use case is shown below
 
 ```python
-from pytorch_mppi import mppi
+from pytorch_mppi import MPPI
+
 # create controller with chosen parameters
-ctrl = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
-                         lambda_=lambda_, device=d, 
-                         u_min=torch.tensor(ACTION_LOW, dtype=torch.double, device=d),
-                         u_max=torch.tensor(ACTION_HIGH, dtype=torch.double, device=d))
+ctrl = MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
+            lambda_=lambda_, device=d,
+            u_min=torch.tensor(ACTION_LOW, dtype=torch.double, device=d),
+            u_max=torch.tensor(ACTION_HIGH, dtype=torch.double, device=d))
 
 # assuming you have a gym-like env
 obs = env.reset()
