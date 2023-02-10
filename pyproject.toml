@@ -1,6 +1,6 @@
 [project]
 name = "pytorch_mppi"
-version = "0.4.1"
+version = "0.4.2"
 description = "Model Predictive Path Integral (MPPI) implemented in pytorch"
 readme = "README.md" # Optional
 
@@ -68,7 +68,8 @@ dependencies = [# Optional
 test = [
     "pytest",
     'gym<=0.20',
-    'pygame'
+    'pygame',
+    'pyglet==1.5.27'
 ]
 
 # List URLs that are relevant to your project
