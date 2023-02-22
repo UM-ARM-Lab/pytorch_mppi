@@ -196,7 +196,7 @@ class Experiment:
                 'params': {k: v.detach().clone() for k, v in self.params.items()},
             })
 
-    def plan(self, iteration):
+    def optimize_parameters(self, iteration):
         costs, rollouts = self.evaluate()
         self.log_current_result(iteration, costs, rollouts)
 
@@ -277,7 +277,8 @@ class Experiment:
 
         self.clear_artist(self.cost_artist)
         a = []
-        a.append(self.ax.contourf(x, z, v, levels=[2, 4, 8, 16, 24, 32, 40, 50, 60, 70, 80, 90, 100], norm=norm, cmap=self.cmap))
+        a.append(self.ax.contourf(x, z, v, levels=[2, 4, 8, 16, 24, 32, 40, 50, 60, 70, 80, 90, 100], norm=norm,
+                                  cmap=self.cmap))
         a.append(self.ax.contour(x, z, v, levels=a[0].levels, colors='k', linestyles='dashed'))
         a.append(self.ax.clabel(a[1], a[1].levels, inline=True, fontsize=13))
         self.cost_artist = a
@@ -356,7 +357,7 @@ class CMAESExperiment(FlattenExperiment):
         options = {"popsize": self.population, "seed": np.random.randint(0, 10000), "tolfun": 1e-5, "tolfunhist": 1e-6}
         self.optim = cma.CMAEvolutionStrategy(x0=x0, sigma0=self.optim_sigma, inopts=options)
 
-    def plan(self, iteration):
+    def optimize_parameters(self, iteration):
         params = self.optim.ask()
         # convert params for use
 
@@ -451,7 +452,7 @@ class MPPI2Experiment(FlattenExperiment):
         self.cached_costs = None
         return c
 
-    def plan(self, iteration):
+    def optimize_parameters(self, iteration):
         state = self.nominal_trajectory.reshape(-1)
         self.optim.command(state, shift_nominal_trajectory=False)
         # action rollouts are the parameters used
@@ -477,7 +478,7 @@ def main():
     with window_recorder.WindowRecorder(["Figure 1"]) if exp.visualize else nullcontext():
         iterations = 50
         for i in range(iterations):
-            exp.plan(i)
+            exp.optimize_parameters(i)
     exp.draw_results()
 
     # input('finished')
