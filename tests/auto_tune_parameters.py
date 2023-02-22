@@ -277,8 +277,8 @@ class Experiment:
 
         self.clear_artist(self.cost_artist)
         a = []
-        a.append(self.ax.contourf(x, z, v, norm=norm, cmap=self.cmap))
-        a.append(self.ax.contour(x, z, v, colors='k', linestyles='dashed'))
+        a.append(self.ax.contourf(x, z, v, levels=[2, 4, 8, 16, 24, 32, 40, 50, 60, 70, 80, 90, 100], norm=norm, cmap=self.cmap))
+        a.append(self.ax.contour(x, z, v, levels=a[0].levels, colors='k', linestyles='dashed'))
         a.append(self.ax.clabel(a[1], a[1].levels, inline=True, fontsize=13))
         self.cost_artist = a
 
@@ -383,10 +383,11 @@ class CMAESExperiment(FlattenExperiment):
 
 
 class MPPI2Experiment(FlattenExperiment):
-    def __init__(self, *args, population=10, sigma_sigma=0.1, lambda_=1., **kwargs):
+    def __init__(self, *args, population=10, sigma_sigma=0.1, lambda_=1., time_varying_parameters=False, **kwargs):
         self.population = population
         self.sigma_sigma = sigma_sigma
         self.optim_lambda = lambda_
+        self.time_varying_parameters = time_varying_parameters
         self.cached_costs = None
         super().__init__(*args, **kwargs)
 
@@ -405,7 +406,8 @@ class MPPI2Experiment(FlattenExperiment):
         p_min, p_max = self.flatten_params_min_max()
         self.optim = MPPI(self.mpc_dynamics, self.mpc_running_cost, self.mppi.T * self.mppi.nu, params_sigma,
                           num_samples=self.population,
-                          horizon=self.num_refinement_steps, device=self.d, lambda_=self.optim_lambda,
+                          horizon=self.num_refinement_steps if self.time_varying_parameters else 1,
+                          device=self.d, lambda_=self.optim_lambda,
                           u_init=x0, U_init=x0.repeat(self.num_refinement_steps, 1),
                           u_min=p_min, u_max=p_max)
 
@@ -436,9 +438,7 @@ class MPPI2Experiment(FlattenExperiment):
         for i, traj in enumerate(trajectory):
             U = traj.reshape(-1, self.nx)
             self.unflatten_params(params[i])
-            # self.mppi.U = U
-            # self.mppi.command(self.start, shift_nominal_trajectory=False)
-            costs, _ = self.evaluate(U, num_runs=1)
+            costs, _ = self.evaluate(U, num_runs=1 if self.time_varying_parameters else None)
             new_trajectories.append(self.mppi.U.clone().reshape(-1))
             self.cached_costs.append(costs.mean())
         self.cached_costs = torch.stack(self.cached_costs)
@@ -456,21 +456,24 @@ class MPPI2Experiment(FlattenExperiment):
         self.optim.command(state, shift_nominal_trajectory=False)
         # action rollouts are the parameters used
         # "state" rollouts are the nominal trajectories
-
-        trajectory_rollouts = self.optim.get_rollouts(state)
         last_params = self.optim.U[-1]
-        last_trajectory = trajectory_rollouts[0, -1]
-
         self.unflatten_params(last_params)
-        # only get 1 run since the nominal trajectory is already the product of many runs
-        costs, rollouts = self.evaluate(last_trajectory.reshape(self.mppi.T, self.mppi.nu), num_runs=1)
+
+        if self.time_varying_parameters:
+            trajectory_rollouts = self.optim.get_rollouts(state)
+            last_trajectory = trajectory_rollouts[0, -1]
+            # only get 1 run since the nominal trajectory is already the product of many runs
+            costs, rollouts = self.evaluate(last_trajectory.reshape(self.mppi.T, self.mppi.nu), num_runs=1)
+        else:
+            costs, rollouts = self.evaluate()
+
         self.log_current_result(iteration, costs, rollouts)
 
 
 def main():
     seed(1)
     # torch.autograd.set_detect_anomaly(True)
-    exp = MPPI2Experiment(visualize=True)
+    exp = CMAESExperiment(visualize=True, num_refinement_steps=10)
     with window_recorder.WindowRecorder(["Figure 1"]) if exp.visualize else nullcontext():
         iterations = 50
         for i in range(iterations):
