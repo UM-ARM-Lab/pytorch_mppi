@@ -266,7 +266,7 @@ class MPPI():
             u = self.u_scale * perturbed_actions[:, t].repeat(self.M, 1, 1)
             state = self._dynamics(state, u, t)
             c = self._running_cost(state, u)
-            cost_samples += c
+            cost_samples = cost_samples + c
             if self.M > 1:
                 cost_var += c.var(dim=0) * (self.rollout_var_discount ** t)
 
@@ -282,15 +282,15 @@ class MPPI():
         # action perturbation cost
         if self.terminal_state_cost:
             c = self.terminal_state_cost(states, actions)
-            cost_samples += c
-        cost_total += cost_samples.mean(dim=0)
-        cost_total += cost_var * self.rollout_var_cost
+            cost_samples = cost_samples + c
+        cost_total = cost_total + cost_samples.mean(dim=0)
+        cost_total = cost_total + cost_var * self.rollout_var_cost
         return cost_total, states, actions
 
     def _compute_total_cost_batch(self):
         # parallelize sampling across trajectories
         # resample noise each time we take an action
-        noise = self.noise_dist.sample((self.K, self.T))
+        noise = self.noise_dist.rsample((self.K, self.T))
         # broadcast own control to noise over samples; now it's K x T x nu
         perturbed_action = self.U + noise
         if self.sample_null_action:
