@@ -1,6 +1,7 @@
 import torch
 from torch.distributions import MultivariateNormal
 from arm_pytorch_utilities import linalg
+from arm_pytorch_utilities.tensor_utils import ensure_tensor
 import matplotlib.colors
 from matplotlib import pyplot as plt
 from pytorch_mppi.mppi import handle_batch_input
@@ -75,6 +76,7 @@ class HillCost:
 class Experiment:
     def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", r=0.01, evaluate_running_cost=True,
                  visualize=True,
+                 num_refinement_steps=5,
                  num_trajectories=5, num_samples=500, horizon=20):
         self.d = device
         self.dtype = dtype
@@ -84,7 +86,9 @@ class Experiment:
         ]
         self.evaluate_running_cost = evaluate_running_cost
         self.num_trajectories = num_trajectories
+        self.num_refinement_steps = num_refinement_steps
         self.visualize = visualize
+        self.nx = 2
 
         B = torch.tensor([[0.5, 0], [0, -0.5]], device=self.d, dtype=self.dtype)
         self.dynamics = LinearDeltaDynamics(B)
@@ -147,15 +151,20 @@ class Experiment:
             v.requires_grad = True
         self.optim = torch.optim.Adam(self.params.values(), lr=0.1)
 
-    def evaluate(self):
+    def evaluate(self, trajectory=None, num_runs=None):
         """Produce costs and rollouts from the current state of MPPI"""
         # cost is of the terminal cost of the rollout from MPPI running for 1 iteration, averaged over some trials
         # inheriting classes should change this to other evaluation methods
         costs = None
         rollouts = []
         for j in range(self.num_trajectories):
-            self.mppi.U = self.nominal_trajectory.clone()
-            self.mppi.command(self.start, shift_nominal_trajectory=False)
+            if trajectory is None:
+                trajectory = self.nominal_trajectory
+            self.mppi.U = trajectory.clone()
+            if num_runs is None:
+                num_runs = self.num_refinement_steps
+            for k in range(num_runs):
+                self.mppi.command(self.start, shift_nominal_trajectory=False)
 
             # with torch.no_grad():
             rollout = self.mppi.get_rollouts(self.start)
@@ -302,37 +311,6 @@ class Experiment:
         return artists
 
 
-class MultistepGradientExperiment(Experiment):
-    def __init__(self, *args, refinement_steps=5, **kwargs):
-        self.refinement_steps = refinement_steps
-        super().__init__(*args, **kwargs)
-
-    def evaluate(self):
-        costs = None
-        rollouts = []
-        for j in range(5):
-            self.mppi.U = self.nominal_trajectory.clone()
-            for k in range(self.refinement_steps):
-                self.mppi.command(self.start, shift_nominal_trajectory=False)
-
-            # with torch.no_grad():
-            rollout = self.mppi.get_rollouts(self.start)
-            rollouts.append(rollout)
-
-            this_cost = 0
-            rollout = rollout[0]
-            if self.evaluate_running_cost:
-                for t in range(len(rollout) - 1):
-                    this_cost = this_cost + self.running_cost(rollout[t], self.mppi.U[t])
-            this_cost = this_cost + self.terminal_cost(rollout, self.mppi.U)
-
-            if costs is None:
-                costs = this_cost
-            else:
-                costs = torch.cat((costs, this_cost))
-        return costs, rollouts
-
-
 class FlattenExperiment(Experiment):
     def flatten_params(self):
         x = []
@@ -348,7 +326,7 @@ class FlattenExperiment(Experiment):
         if 'sigma' in self.params:
             sigma = x[i:i + 2]
             i += 2
-            self.sigma = torch.tensor(sigma, dtype=self.dtype, device=self.d)
+            self.sigma = ensure_tensor(self.d, self.dtype, sigma)
             # to remain positive definite
             self.sigma[self.sigma < 0] = 0.0001
             self.params['sigma'] = self.sigma
@@ -356,9 +334,9 @@ class FlattenExperiment(Experiment):
             self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
 
 
-class CMAESExperiment(MultistepGradientExperiment, FlattenExperiment):
+class CMAESExperiment(FlattenExperiment):
     def __init__(self, *args, population=10, optim_sigma=0.1, log_best=True, **kwargs):
-        self.B = population
+        self.population = population
         self.optim_sigma = optim_sigma
         self.log_best = log_best
         super().__init__(*args, **kwargs)
@@ -375,7 +353,7 @@ class CMAESExperiment(MultistepGradientExperiment, FlattenExperiment):
         # need to flatten our parameters to R^m
         x0 = self.flatten_params()
 
-        options = {"popsize": self.B, "seed": np.random.randint(0, 10000), "tolfun": 1e-5, "tolfunhist": 1e-6}
+        options = {"popsize": self.population, "seed": np.random.randint(0, 10000), "tolfun": 1e-5, "tolfunhist": 1e-6}
         self.optim = cma.CMAEvolutionStrategy(x0=x0, sigma0=self.optim_sigma, inopts=options)
 
     def plan(self, iteration):
@@ -404,10 +382,95 @@ class CMAESExperiment(MultistepGradientExperiment, FlattenExperiment):
             self.log_current_result(iteration, cost_per_param, all_rollouts[0])
 
 
+class MPPI2Experiment(FlattenExperiment):
+    def __init__(self, *args, population=10, sigma_sigma=0.1, lambda_=1., **kwargs):
+        self.population = population
+        self.sigma_sigma = sigma_sigma
+        self.optim_lambda = lambda_
+        self.cached_costs = None
+        super().__init__(*args, **kwargs)
+
+    def setup_optimization(self):
+        self.sigma.requires_grad = False
+        self.params = {
+            # 'terminal scale': self.terminal_scale,
+            # 'lambda': self.lamb,
+            # 'sigma inv': self.mppi.noise_sigma_inv
+            'sigma': self.sigma
+        }
+
+        # default parameters becomes u_init mean
+        x0 = torch.tensor(self.flatten_params(), dtype=self.dtype, device=self.d)
+        params_sigma = self.flatten_params_sigma()
+        p_min, p_max = self.flatten_params_min_max()
+        self.optim = MPPI(self.mpc_dynamics, self.mpc_running_cost, self.mppi.T * self.mppi.nu, params_sigma,
+                          num_samples=self.population,
+                          horizon=self.num_refinement_steps, device=self.d, lambda_=self.optim_lambda,
+                          u_init=x0, U_init=x0.repeat(self.num_refinement_steps, 1),
+                          u_min=p_min, u_max=p_max)
+
+    def flatten_params_sigma(self):
+        sigma = []
+        # TODO implement for other parameters
+        if 'sigma' in self.params:
+            sigma.append(torch.tensor([self.sigma_sigma, self.sigma_sigma], device=self.d, dtype=self.dtype))
+        sigma = torch.cat(sigma)
+        return torch.diag(sigma)
+
+    def flatten_params_min_max(self):
+        mins = []
+        maxs = []
+        # TODO implement for other parameters
+        # TODO compute parameter dimensionality
+        np = 2
+        if 'sigma' in self.params:
+            mins.append(torch.tensor([0.0001 for _ in range(np)], device=self.d, dtype=self.dtype))
+            maxs.append(torch.tensor([10e8 for _ in range(np)], device=self.d, dtype=self.dtype))
+        mins = torch.cat(mins)
+        maxs = torch.cat(maxs)
+        return mins, maxs
+
+    def mpc_dynamics(self, trajectory, params):
+        new_trajectories = []
+        self.cached_costs = []
+        for i, traj in enumerate(trajectory):
+            U = traj.reshape(-1, self.nx)
+            self.unflatten_params(params[i])
+            # self.mppi.U = U
+            # self.mppi.command(self.start, shift_nominal_trajectory=False)
+            costs, _ = self.evaluate(U, num_runs=1)
+            new_trajectories.append(self.mppi.U.clone().reshape(-1))
+            self.cached_costs.append(costs.mean())
+        self.cached_costs = torch.stack(self.cached_costs)
+        new_trajectories = torch.stack(new_trajectories)
+        return new_trajectories
+
+    def mpc_running_cost(self, trajectory, params):
+        c = self.cached_costs
+        # avoid using stale cache
+        self.cached_costs = None
+        return c
+
+    def plan(self, iteration):
+        state = self.nominal_trajectory.reshape(-1)
+        self.optim.command(state, shift_nominal_trajectory=False)
+        # action rollouts are the parameters used
+        # "state" rollouts are the nominal trajectories
+
+        trajectory_rollouts = self.optim.get_rollouts(state)
+        last_params = self.optim.U[-1]
+        last_trajectory = trajectory_rollouts[0, -1]
+
+        self.unflatten_params(last_params)
+        # only get 1 run since the nominal trajectory is already the product of many runs
+        costs, rollouts = self.evaluate(last_trajectory.reshape(self.mppi.T, self.mppi.nu), num_runs=1)
+        self.log_current_result(iteration, costs, rollouts)
+
+
 def main():
     seed(1)
     # torch.autograd.set_detect_anomaly(True)
-    exp = CMAESExperiment(visualize=False, log_best=False)
+    exp = MPPI2Experiment(visualize=True)
     with window_recorder.WindowRecorder(["Figure 1"]) if exp.visualize else nullcontext():
         iterations = 50
         for i in range(iterations):
