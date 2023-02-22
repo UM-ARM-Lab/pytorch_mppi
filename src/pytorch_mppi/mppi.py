@@ -203,14 +203,17 @@ class MPPI():
     def _running_cost(self, state, u):
         return self.running_cost(state, u)
 
-    def command(self, state):
+    def command(self, state, shift_nominal_trajectory=True):
         """
         :param state: (nx) or (K x nx) current state, or samples of states (for propagating a distribution of states)
+        :param shift_nominal_trajectory: Whether to roll the nominal trajectory forward one step. This should be True
+        if the command is to be executed. If the nominal trajectory is to be refined then it should be False.
         :returns action: (nu) best action
         """
-        # shift command 1 time step
-        self.U = torch.roll(self.U, -1, dims=0)
-        self.U[-1] = self.u_init
+        if shift_nominal_trajectory:
+            # shift command 1 time step
+            self.U = torch.roll(self.U, -1, dims=0)
+            self.U[-1] = self.u_init
 
         return self._command(state)
 
@@ -223,8 +226,11 @@ class MPPI():
         self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
         eta = torch.sum(self.cost_total_non_zero)
         self.omega = (1. / eta) * self.cost_total_non_zero
+        perturbations = []
         for t in range(self.T):
-            self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
+            perturbations.append(torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0))
+        perturbations = torch.stack(perturbations)
+        self.U = self.U + perturbations
         action = self.U[:self.u_per_command]
         # reduce dimensionality if we only need the first command
         if self.u_per_command == 1:
@@ -284,13 +290,13 @@ class MPPI():
     def _compute_total_cost_batch(self):
         # parallelize sampling across trajectories
         # resample noise each time we take an action
-        self.noise = self.noise_dist.sample((self.K, self.T))
+        noise = self.noise_dist.sample((self.K, self.T))
         # broadcast own control to noise over samples; now it's K x T x nu
-        self.perturbed_action = self.U + self.noise
+        perturbed_action = self.U + noise
         if self.sample_null_action:
-            self.perturbed_action[self.K - 1] = 0
+            perturbed_action[self.K - 1] = 0
         # naively bound control
-        self.perturbed_action = self._bound_action(self.perturbed_action)
+        self.perturbed_action = self._bound_action(perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.noise = self.perturbed_action - self.U
         if self.noise_abs_cost:
@@ -301,12 +307,12 @@ class MPPI():
         else:
             action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv  # Like original paper
 
-        self.cost_total, self.states, self.actions = self._compute_rollout_costs(self.perturbed_action)
-        self.actions /= self.u_scale
+        rollout_cost, self.states, actions = self._compute_rollout_costs(self.perturbed_action)
+        self.actions = actions / self.u_scale
 
         # action perturbation cost
         perturbation_cost = torch.sum(self.U * action_cost, dim=(1, 2))
-        self.cost_total += perturbation_cost
+        self.cost_total = rollout_cost + perturbation_cost
         return self.cost_total
 
     def _bound_action(self, action):
