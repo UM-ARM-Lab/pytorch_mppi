@@ -69,13 +69,14 @@ class HillCost:
 
 
 class Experiment:
-    def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", r=0.01):
+    def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", r=0.01, evaluate_running_cost=True):
         self.d = device
         self.dtype = dtype
         self.state_ranges = [
             (-5, 5),
             (-5, 5)
         ]
+        self.evaluate_running_cost = evaluate_running_cost
 
         B = torch.tensor([[0.5, 0], [0, -0.5]], device=self.d, dtype=self.dtype)
         self.dynamics = LinearDeltaDynamics(B)
@@ -111,6 +112,7 @@ class Experiment:
         self.draw_start()
         self.draw_goal()
 
+        self.results = []
         K = 500
         T = 20
         self.terminal_scale = torch.tensor([10], dtype=self.dtype, device=self.d)
@@ -122,18 +124,24 @@ class Experiment:
                          lambda_=self.lamb)
         # use fixed nominal trajectory
         self.nominal_trajectory = self.mppi.U.clone()
+        self.params = None
+        self.optim = None
+
+    def setup_optimization(self):
         self.params = {
             # 'terminal scale': self.terminal_scale,
             # 'lambda': self.lamb,
             # 'sigma inv': self.mppi.noise_sigma_inv
             'sigma': self.sigma
         }
-        self.results = []
         for v in self.params.values():
             v.requires_grad = True
         self.optim = torch.optim.Adam(self.params.values(), lr=0.1)
 
-    def plan(self, iteration):
+    def evaluate(self):
+        """Produce costs and rollouts from the current state of MPPI"""
+        # cost is of the terminal cost of the rollout from MPPI running for 1 iteration, averaged over some trials
+        # inheriting classes should change this to other evaluation methods
         costs = None
         rollouts = []
         for j in range(5):
@@ -146,12 +154,21 @@ class Experiment:
 
             # TODO experiment with different costs to learn on
             # this_cost = self.mppi.cost_total
-            this_cost = self.terminal_cost(rollout[0], self.mppi.U)
+            this_cost = 0
+            rollout = rollout[0]
+            if self.evaluate_running_cost:
+                for t in range(len(rollout) - 1):
+                    this_cost = this_cost + self.running_cost(rollout[t], self.mppi.U[t])
+            this_cost = this_cost + self.terminal_cost(rollout, self.mppi.U)
 
             if costs is None:
                 costs = this_cost
             else:
                 costs = torch.cat((costs, this_cost))
+        return costs, rollouts
+
+    def plan(self, iteration):
+        costs, rollouts = self.evaluate()
 
         with torch.no_grad():
             rollouts = torch.cat(rollouts)
@@ -266,17 +283,48 @@ class Experiment:
         return artists
 
 
+class MultistepGradientExperiment(Experiment):
+    def __init__(self, *args, refinement_steps=5, **kwargs):
+        self.refinement_steps = refinement_steps
+        super().__init__(*args, **kwargs)
+
+    def evaluate(self):
+        costs = None
+        rollouts = []
+        for j in range(5):
+            self.mppi.U = self.nominal_trajectory.clone()
+            for k in range(self.refinement_steps):
+                self.mppi.command(self.start, shift_nominal_trajectory=False)
+
+            # with torch.no_grad():
+            rollout = self.mppi.get_rollouts(self.start)
+            rollouts.append(rollout)
+
+            this_cost = 0
+            rollout = rollout[0]
+            if self.evaluate_running_cost:
+                for t in range(len(rollout) - 1):
+                    this_cost = this_cost + self.running_cost(rollout[t], self.mppi.U[t])
+            this_cost = this_cost + self.terminal_cost(rollout, self.mppi.U)
+
+            if costs is None:
+                costs = this_cost
+            else:
+                costs = torch.cat((costs, this_cost))
+        return costs, rollouts
+
+
 def main():
     seed(1)
     # torch.autograd.set_detect_anomaly(True)
-    exp = Experiment()
+    exp = MultistepGradientExperiment()
     with window_recorder.WindowRecorder(["Figure 1"]):
         iterations = 100
         for i in range(iterations):
             exp.plan(i)
     exp.draw_results()
 
-    input('finished')
+    # input('finished')
 
 
 if __name__ == "__main__":
