@@ -1,4 +1,5 @@
 import torch
+from torch.distributions import MultivariateNormal
 from arm_pytorch_utilities import linalg
 import matplotlib.colors
 from matplotlib import pyplot as plt
@@ -7,6 +8,7 @@ from pytorch_mppi.mppi import handle_batch_input
 from pytorch_mppi import MPPI
 from pytorch_seed import seed
 import logging
+import window_recorder
 
 plt.switch_backend('Qt5Agg')
 
@@ -67,7 +69,7 @@ class HillCost:
 
 
 class Experiment:
-    def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", r=0.1):
+    def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", r=0.01):
         self.d = device
         self.dtype = dtype
         self.state_ranges = [
@@ -109,20 +111,24 @@ class Experiment:
         self.draw_start()
         self.draw_goal()
 
-        sigma = 0.5 * eye
         K = 500
         T = 20
         self.terminal_scale = torch.tensor([10], dtype=self.dtype, device=self.d)
         self.lamb = torch.tensor([1], dtype=self.dtype, device=self.d)
-        self.mppi = MPPI(self.dynamics, self.running_cost, 2, noise_sigma=sigma, num_samples=K, horizon=T,
-                         device=self.d, terminal_state_cost=self.terminal_cost, lambda_=self.lamb)
+        self.sigma = torch.tensor([0.2, 0.2], dtype=self.dtype, device=self.d, requires_grad=True)
+        self.mppi = MPPI(self.dynamics, self.running_cost, 2, noise_sigma=torch.diag(self.sigma), num_samples=K,
+                         horizon=T, device=self.d,
+                         terminal_state_cost=self.terminal_cost,
+                         lambda_=self.lamb)
         # use fixed nominal trajectory
         self.nominal_trajectory = self.mppi.U.clone()
         self.params = {
             # 'terminal scale': self.terminal_scale,
-            'lambda': self.lamb,
-            'sigma inv': self.mppi.noise_sigma_inv
+            # 'lambda': self.lamb,
+            # 'sigma inv': self.mppi.noise_sigma_inv
+            'sigma': self.sigma
         }
+        self.results = []
         for v in self.params.values():
             v.requires_grad = True
         self.optim = torch.optim.Adam(self.params.values(), lr=0.1)
@@ -134,23 +140,38 @@ class Experiment:
             self.mppi.U = self.nominal_trajectory.clone()
             self.mppi.command(self.start, shift_nominal_trajectory=False)
 
-            with torch.no_grad():
-                rollout = self.mppi.get_rollouts(self.start)
-                rollouts.append(rollout)
+            # with torch.no_grad():
+            rollout = self.mppi.get_rollouts(self.start)
+            rollouts.append(rollout)
 
             # TODO experiment with different costs to learn on
+            # this_cost = self.mppi.cost_total
+            this_cost = self.terminal_cost(rollout[0], self.mppi.U)
+
             if costs is None:
-                costs = self.mppi.cost_total
+                costs = this_cost
             else:
-                costs = torch.cat((costs, self.mppi.cost_total))
+                costs = torch.cat((costs, this_cost))
 
         with torch.no_grad():
             rollouts = torch.cat(rollouts)
             self.draw_rollouts(rollouts)
             logger.info(f"i:{iteration} cost: {costs.mean().item()} params:{self.params}")
+            self.results.append({
+                'iteration': iteration,
+                'cost': costs.mean().item(),
+                'params': {k: v.detach().clone() for k, v in self.params.items()},
+            })
 
         costs.mean().backward()
         self.optim.step()
+        # to remain positive definite
+        with torch.no_grad():
+            self.sigma[self.sigma < 0] = 0.0001
+        self.mppi.noise_dist = MultivariateNormal(self.mppi.noise_mu, covariance_matrix=torch.diag(self.sigma))
+        # TODO see if this needs to be attached
+        self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
+
         self.optim.zero_grad()
 
     def terminal_cost(self, states, actions):
@@ -165,6 +186,31 @@ class Experiment:
             else:
                 c += cost(state, action)
         return c
+
+    def draw_results(self):
+        iterations = [res['iteration'] for res in self.results]
+        loss = [res['cost'] for res in self.results]
+
+        # loss curve
+        fig, ax = plt.subplots()
+        ax.plot(iterations, loss)
+        ax.set_xlabel('iteration')
+        ax.set_ylabel('cost')
+        plt.pause(0.001)
+        plt.savefig('cost.png')
+
+        if 'sigma' in self.params:
+            sigma = [res['params']['sigma'] for res in self.results]
+            sigma = torch.stack(sigma)
+            fig, ax = plt.subplots(nrows=2, sharex=True)
+            ax[0].plot(iterations, sigma[:, 0])
+            ax[1].plot(iterations, sigma[:, 1])
+            ax[1].set_xlabel('iteration')
+            ax[0].set_ylabel('sigma[0]')
+            ax[1].set_ylabel('sigma[1]')
+            plt.draw()
+            plt.pause(0.005)
+            plt.savefig('sigma.png')
 
     def draw_rollouts(self, rollouts):
         self.clear_artist(self.rollout_artist)
@@ -222,12 +268,15 @@ class Experiment:
 
 def main():
     seed(1)
+    # torch.autograd.set_detect_anomaly(True)
     exp = Experiment()
-    iterations = 100
-    for i in range(iterations):
-        exp.plan(i)
+    with window_recorder.WindowRecorder(["Figure 1"]):
+        iterations = 100
+        for i in range(iterations):
+            exp.plan(i)
+    exp.draw_results()
 
-    print("finished")
+    input('finished')
 
 
 if __name__ == "__main__":
