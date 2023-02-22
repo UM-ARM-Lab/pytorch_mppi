@@ -12,6 +12,7 @@ from pytorch_mppi import MPPI
 from pytorch_seed import seed
 import logging
 import window_recorder
+from contextlib import nullcontext
 
 plt.switch_backend('Qt5Agg')
 
@@ -73,6 +74,7 @@ class HillCost:
 
 class Experiment:
     def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", r=0.01, evaluate_running_cost=True,
+                 visualize=True,
                  num_trajectories=5, num_samples=500, horizon=20):
         self.d = device
         self.dtype = dtype
@@ -82,6 +84,7 @@ class Experiment:
         ]
         self.evaluate_running_cost = evaluate_running_cost
         self.num_trajectories = num_trajectories
+        self.visualize = visualize
 
         B = torch.tensor([[0.5, 0], [0, -0.5]], device=self.d, dtype=self.dtype)
         self.dynamics = LinearDeltaDynamics(B)
@@ -99,23 +102,24 @@ class Experiment:
         self.costs.append(HillCost(torch.tensor([[0.1, 0.05], [0.05, 0.1]], device=self.d, dtype=self.dtype) * 1.5,
                                    torch.tensor([-0.5, -1], device=self.d, dtype=self.dtype), cost_at_center=60))
 
-        plt.ion()
-        plt.show()
+        if self.visualize:
+            plt.ion()
+            plt.show()
 
-        self.fig, self.ax = plt.subplots(figsize=(7, 7))
-        self.ax.set_aspect('equal')
-        self.ax.set(xlim=self.state_ranges[0])
-        self.ax.set(ylim=self.state_ranges[0])
+            self.fig, self.ax = plt.subplots(figsize=(7, 7))
+            self.ax.set_aspect('equal')
+            self.ax.set(xlim=self.state_ranges[0])
+            self.ax.set(ylim=self.state_ranges[0])
 
-        self.cmap = "Greys"
-        # artists for clearing / redrawing
-        self.start_artist = None
-        self.goal_artist = None
-        self.cost_artist = None
-        self.rollout_artist = None
-        self.draw_costs()
-        self.draw_start()
-        self.draw_goal()
+            self.cmap = "Greys"
+            # artists for clearing / redrawing
+            self.start_artist = None
+            self.goal_artist = None
+            self.cost_artist = None
+            self.rollout_artist = None
+            self.draw_costs()
+            self.draw_start()
+            self.draw_goal()
 
         self.results = []
         self.terminal_scale = torch.tensor([10], dtype=self.dtype, device=self.d)
@@ -237,6 +241,8 @@ class Experiment:
             plt.savefig('sigma.png')
 
     def draw_rollouts(self, rollouts):
+        if not self.visualize:
+            return
         self.clear_artist(self.rollout_artist)
         artists = []
         for rollout in rollouts:
@@ -247,6 +253,8 @@ class Experiment:
         plt.pause(0.001)
 
     def draw_costs(self, resolution=0.05, value_padding=0):
+        if not self.visualize:
+            return
         coords = [torch.arange(low, high + resolution, resolution, dtype=self.dtype, device=self.d) for low, high in
                   self.state_ranges]
         pts = torch.cartesian_prod(*coords)
@@ -275,10 +283,14 @@ class Experiment:
                 a.remove()
 
     def draw_start(self):
+        if not self.visualize:
+            return
         self.clear_artist(self.start_artist)
         self.start_artist = self.draw_state(self.start, "tab:blue", label='start')
 
     def draw_goal(self):
+        if not self.visualize:
+            return
         self.clear_artist(self.goal_artist)
         self.goal_artist = self.draw_state(self.goal, "tab:green", label='goal')
 
@@ -321,27 +333,7 @@ class MultistepGradientExperiment(Experiment):
         return costs, rollouts
 
 
-class CMAESExperiment(MultistepGradientExperiment):
-    def __init__(self, *args, population=10, optim_sigma=0.1, **kwargs):
-        self.B = population
-        self.optim_sigma = optim_sigma
-        super().__init__(*args, **kwargs)
-
-    def setup_optimization(self):
-        self.sigma.requires_grad = False
-        self.params = {
-            # 'terminal scale': self.terminal_scale,
-            # 'lambda': self.lamb,
-            # 'sigma inv': self.mppi.noise_sigma_inv
-            'sigma': self.sigma
-        }
-
-        # need to flatten our parameters to R^m
-        x0 = self.flatten_params()
-
-        options = {"popsize": self.B, "seed": np.random.randint(0, 10000), "tolfun": 1e-5, "tolfunhist": 1e-6}
-        self.optim = cma.CMAEvolutionStrategy(x0=x0, sigma0=self.optim_sigma, inopts=options)
-
+class FlattenExperiment(Experiment):
     def flatten_params(self):
         x = []
         # TODO implement for other parameters
@@ -363,6 +355,29 @@ class CMAESExperiment(MultistepGradientExperiment):
             self.mppi.noise_dist = MultivariateNormal(self.mppi.noise_mu, covariance_matrix=torch.diag(self.sigma))
             self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
 
+
+class CMAESExperiment(MultistepGradientExperiment, FlattenExperiment):
+    def __init__(self, *args, population=10, optim_sigma=0.1, log_best=True, **kwargs):
+        self.B = population
+        self.optim_sigma = optim_sigma
+        self.log_best = log_best
+        super().__init__(*args, **kwargs)
+
+    def setup_optimization(self):
+        self.sigma.requires_grad = False
+        self.params = {
+            # 'terminal scale': self.terminal_scale,
+            # 'lambda': self.lamb,
+            # 'sigma inv': self.mppi.noise_sigma_inv
+            'sigma': self.sigma
+        }
+
+        # need to flatten our parameters to R^m
+        x0 = self.flatten_params()
+
+        options = {"popsize": self.B, "seed": np.random.randint(0, 10000), "tolfun": 1e-5, "tolfunhist": 1e-6}
+        self.optim = cma.CMAEvolutionStrategy(x0=x0, sigma0=self.optim_sigma, inopts=options)
+
     def plan(self, iteration):
         params = self.optim.ask()
         # convert params for use
@@ -378,17 +393,22 @@ class CMAESExperiment(MultistepGradientExperiment):
         cost_per_param = np.array(cost_per_param)
         self.optim.tell(params, cost_per_param)
 
-        best_param = self.optim.best.x
-        self.unflatten_params(best_param)
-        best_cost, best_rollout = self.evaluate()
-        self.log_current_result(iteration, best_cost, best_rollout)
+        # whether the best solution or the average solution should be logged
+        if self.log_best:
+            best_param = self.optim.best.x
+            self.unflatten_params(best_param)
+            best_cost, best_rollout = self.evaluate()
+            self.log_current_result(iteration, best_cost, best_rollout)
+        else:
+            self.unflatten_params(np.stack(params).mean(axis=0))
+            self.log_current_result(iteration, cost_per_param, all_rollouts[0])
 
 
 def main():
     seed(1)
     # torch.autograd.set_detect_anomaly(True)
-    exp = CMAESExperiment()
-    with window_recorder.WindowRecorder(["Figure 1"]):
+    exp = CMAESExperiment(visualize=False, log_best=False)
+    with window_recorder.WindowRecorder(["Figure 1"]) if exp.visualize else nullcontext():
         iterations = 50
         for i in range(iterations):
             exp.plan(i)
