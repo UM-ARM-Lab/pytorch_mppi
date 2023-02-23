@@ -237,6 +237,15 @@ class MPPI():
             action = action[0]
         return action
 
+    def change_horizon(self, horizon):
+        if horizon < self.T:
+            # truncate trajectory
+            self.U = self.U[:horizon]
+        elif horizon > self.T:
+            # extend with u_init
+            self.U = torch.cat((self.U, self.u_init.repeat(horizon - self.T, 1)))
+        self.T = horizon
+
     def reset(self):
         """
         Clear controller state after finishing a trial
