@@ -15,6 +15,11 @@ import logging
 import window_recorder
 from contextlib import nullcontext
 
+from hyperopt import hp
+from ray.tune.search.hyperopt import HyperOptSearch
+from ray import air, tune
+from ray.tune.search.bayesopt import BayesOptSearch
+
 plt.switch_backend('Qt5Agg')
 
 logger = logging.getLogger(__file__)
@@ -107,23 +112,7 @@ class Experiment:
                                    torch.tensor([-0.5, -1], device=self.d, dtype=self.dtype), cost_at_center=60))
 
         if self.visualize:
-            plt.ion()
-            plt.show()
-
-            self.fig, self.ax = plt.subplots(figsize=(7, 7))
-            self.ax.set_aspect('equal')
-            self.ax.set(xlim=self.state_ranges[0])
-            self.ax.set(ylim=self.state_ranges[0])
-
-            self.cmap = "Greys"
-            # artists for clearing / redrawing
-            self.start_artist = None
-            self.goal_artist = None
-            self.cost_artist = None
-            self.rollout_artist = None
-            self.draw_costs()
-            self.draw_start()
-            self.draw_goal()
+            self.start_visualization()
 
         self.results = []
         self.terminal_scale = torch.tensor([10], dtype=self.dtype, device=self.d)
@@ -138,15 +127,18 @@ class Experiment:
         self.nominal_trajectory = self.mppi.U.clone()
         self.params = None
         self.optim = None
+        self.define_parameters()
         self.setup_optimization()
 
-    def setup_optimization(self):
+    def define_parameters(self):
         self.params = {
             # 'terminal scale': self.terminal_scale,
             # 'lambda': self.lamb,
             # 'sigma inv': self.mppi.noise_sigma_inv
             'sigma': self.sigma
         }
+
+    def setup_optimization(self):
         for v in self.params.values():
             v.requires_grad = True
         self.optim = torch.optim.Adam(self.params.values(), lr=0.1)
@@ -211,6 +203,15 @@ class Experiment:
 
         self.optim.zero_grad()
 
+    def apply_parameters(self, params):
+        if 'sigma' in params:
+            self.sigma = ensure_tensor(self.d, self.dtype, params['sigma'])
+            # to remain positive definite
+            self.sigma[self.sigma < 0] = 0.0001
+            self.params['sigma'] = self.sigma
+            self.mppi.noise_dist = MultivariateNormal(self.mppi.noise_mu, covariance_matrix=torch.diag(self.sigma))
+            self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
+
     def terminal_cost(self, states, actions):
         return self.terminal_scale * self.running_cost(states[..., -1, :])
 
@@ -223,6 +224,25 @@ class Experiment:
             else:
                 c += cost(state, action)
         return c
+
+    def start_visualization(self):
+        plt.ion()
+        plt.show()
+
+        self.fig, self.ax = plt.subplots(figsize=(7, 7))
+        self.ax.set_aspect('equal')
+        self.ax.set(xlim=self.state_ranges[0])
+        self.ax.set(ylim=self.state_ranges[0])
+
+        self.cmap = "Greys"
+        # artists for clearing / redrawing
+        self.start_artist = None
+        self.goal_artist = None
+        self.cost_artist = None
+        self.rollout_artist = None
+        self.draw_costs()
+        self.draw_start()
+        self.draw_goal()
 
     def draw_results(self):
         iterations = [res['iteration'] for res in self.results]
@@ -323,16 +343,12 @@ class FlattenExperiment(Experiment):
 
     def unflatten_params(self, x):
         # have to be in the same order as the flattening
+        params = {}
         i = 0
         if 'sigma' in self.params:
-            sigma = x[i:i + 2]
+            params['sigma'] = x[i:i + 2]
             i += 2
-            self.sigma = ensure_tensor(self.d, self.dtype, sigma)
-            # to remain positive definite
-            self.sigma[self.sigma < 0] = 0.0001
-            self.params['sigma'] = self.sigma
-            self.mppi.noise_dist = MultivariateNormal(self.mppi.noise_mu, covariance_matrix=torch.diag(self.sigma))
-            self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
+        self.apply_parameters(params)
 
 
 class CMAESExperiment(FlattenExperiment):
@@ -344,13 +360,6 @@ class CMAESExperiment(FlattenExperiment):
 
     def setup_optimization(self):
         self.sigma.requires_grad = False
-        self.params = {
-            # 'terminal scale': self.terminal_scale,
-            # 'lambda': self.lamb,
-            # 'sigma inv': self.mppi.noise_sigma_inv
-            'sigma': self.sigma
-        }
-
         # need to flatten our parameters to R^m
         x0 = self.flatten_params()
 
@@ -394,12 +403,6 @@ class MPPI2Experiment(FlattenExperiment):
 
     def setup_optimization(self):
         self.sigma.requires_grad = False
-        self.params = {
-            # 'terminal scale': self.terminal_scale,
-            # 'lambda': self.lamb,
-            # 'sigma inv': self.mppi.noise_sigma_inv
-            'sigma': self.sigma
-        }
 
         # default parameters becomes u_init mean
         x0 = torch.tensor(self.flatten_params(), dtype=self.dtype, device=self.d)
@@ -471,14 +474,99 @@ class MPPI2Experiment(FlattenExperiment):
         self.log_current_result(iteration, costs, rollouts)
 
 
+class HyperOptExperiment(Experiment):
+    def __init__(self, *args, iterations=50, visualize=True, **kwargs):
+        self.iterations = iterations
+        self._actually_visualize = visualize
+        super().__init__(*args, visualize=False, **kwargs)
+
+    def setup_optimization(self):
+        self.sigma.requires_grad = False
+
+        space = {
+            "sigma0": hp.uniform("sigma0", 0.0001, 10),
+            "sigma1": hp.uniform("sigma1", 0.0001, 10),
+        }
+        initial_params = [
+            {
+                "sigma0": self.sigma[0].item(), "sigma1": self.sigma[1].item()
+            }
+        ]
+        hyperopt_search = HyperOptSearch(space, points_to_evaluate=initial_params, metric="cost", mode="min")
+        self.optim = tune.Tuner(
+            self.trainable,
+            tune_config=tune.TuneConfig(
+                num_samples=self.iterations,
+                search_alg=hyperopt_search,
+                metric="cost",
+                mode="min",
+            )
+        )
+
+    def config_to_params(self, config):
+        params = {}
+        if 'sigma' in self.params:
+            params['sigma'] = torch.tensor([config['sigma0'], config['sigma1']], dtype=self.dtype, device=self.d)
+        return params
+
+    def trainable(self, config):
+        self.apply_parameters(self.config_to_params(config))
+        costs, rollouts = self.evaluate()
+        tune.report(cost=costs.mean().item())
+
+    def optimize_all_iterations(self):
+        results = self.optim.fit()
+
+        # avoid having too many plots pop up
+        self.visualize = self._actually_visualize
+        self.start_visualization()
+        for iteration in range(self.iterations):
+            res = results[iteration]
+            self.apply_parameters(self.config_to_params(res.config))
+            costs, rollouts = self.evaluate()
+            self.log_current_result(iteration, costs, rollouts)
+        self.visualize = False
+
+    def optimize_parameters(self, iteration):
+        raise RuntimeError("optimize all iterations should be called instead")
+
+
+class BayesOptExperiment(HyperOptExperiment):
+    def setup_optimization(self):
+        self.sigma.requires_grad = False
+
+        space = {
+            "sigma0": tune.uniform(0.0001, 10),
+            "sigma1": tune.uniform(0.0001, 10),
+        }
+        initial_params = [
+            {
+                "sigma0": self.sigma[0].item(), "sigma1": self.sigma[1].item()
+            }
+        ]
+        hyperopt_search = BayesOptSearch(points_to_evaluate=initial_params, metric="cost", mode="min")
+        self.optim = tune.Tuner(
+            self.trainable,
+            tune_config=tune.TuneConfig(
+                num_samples=self.iterations,
+                search_alg=hyperopt_search,
+                metric="cost",
+                mode="min",
+            ),
+            param_space=space,
+        )
+
+
 def main():
     seed(1)
     # torch.autograd.set_detect_anomaly(True)
-    exp = CMAESExperiment(visualize=True, num_refinement_steps=10)
-    with window_recorder.WindowRecorder(["Figure 1"]) if exp.visualize else nullcontext():
-        iterations = 50
-        for i in range(iterations):
-            exp.optimize_parameters(i)
+    # exp = CMAESExperiment(visualize=True, num_refinement_steps=10)
+    # with window_recorder.WindowRecorder(["Figure 1"]) if exp.visualize else nullcontext():
+    #     iterations = 50
+    #     for i in range(iterations):
+    #         exp.optimize_parameters(i)
+    exp = BayesOptExperiment(visualize=True, num_refinement_steps=10)
+    exp.optimize_all_iterations()
     exp.draw_results()
 
     # input('finished')
