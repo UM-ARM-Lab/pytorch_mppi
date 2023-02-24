@@ -238,12 +238,12 @@ class MPPI():
         return action
 
     def change_horizon(self, horizon):
-        if horizon < self.T:
+        if horizon < self.U.shape[0]:
             # truncate trajectory
             self.U = self.U[:horizon]
-        elif horizon > self.T:
+        elif horizon > self.U.shape[0]:
             # extend with u_init
-            self.U = torch.cat((self.U, self.u_init.repeat(horizon - self.T, 1)))
+            self.U = torch.cat((self.U, self.u_init.repeat(horizon - self.U.shape[0], 1)))
         self.T = horizon
 
     def reset(self):
