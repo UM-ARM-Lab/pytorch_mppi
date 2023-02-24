@@ -1,4 +1,3 @@
-import enum
 import logging
 import abc
 
@@ -160,7 +159,7 @@ class AutotuneMPPI:
         x = np.concatenate(x)
         return x
 
-    def unflatten_params(self, x):
+    def unflatten_params(self, x, apply=True):
         # have to be in the same order as the flattening
         params = {}
         nu = self.mppi.nu
@@ -182,7 +181,9 @@ class AutotuneMPPI:
             v = max(round(x[i]), 1)
             params['horizon'] = v
             i += 1
-        self.apply_parameters(params)
+        if apply:
+            self.apply_parameters(params)
+        return params
 
     def apply_parameters(self, params):
         if 'sigma' in params:
@@ -198,3 +199,21 @@ class AutotuneMPPI:
         if 'horizon' in params:
             self.mppi.change_horizon(params['horizon'])
         self.params = params
+
+    def config_to_params(self, config):
+        """Configs are param dictionaries where each must be a scalar"""
+        nu = self.mppi.nu
+        p = self.params
+
+        dtype = self.dtype
+        device = self.d
+
+        params = {}
+        for name in ['sigma', 'mu']:
+            if name in p:
+                params[name] = torch.tensor([config[f'{name}{i}'] for i in range(nu)], dtype=dtype, device=device)
+        for name in ['lambda', 'horizon']:
+            if name in p:
+                params[name] = config[name]
+
+        return params

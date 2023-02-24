@@ -181,15 +181,15 @@ search space of each parameter, but default reasonable ones are provided.
 # https://docs.ray.io/en/latest/tune/api_docs/suggestion.html#search-algorithms-tune-search
 # rather than adapting the current parameters, these optimizers allow you to define a search space for each
 # and will search on that space
-from pytorch_mppi import autotune_ray
+from pytorch_mppi import autotune_global
 from ray.tune.search.hyperopt import HyperOptSearch
 from ray.tune.search.bayesopt import BayesOptSearch
 
 # be sure to close any figures before ray tune optimization or they will be duplicated
 env.visualize = False
 plt.close('all')
-tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate,
-                              optimizer=autotune_ray.RayOptimizer(HyperOptSearch))
+tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+                                           optimizer=autotune_global.RayOptimizer(HyperOptSearch))
 # ray tuners cannot be tuned iteratively, but you can specify how many iterations to tune for
 res = tuner.optimize_all(100)
 res = tuner.get_best_result()
@@ -199,6 +199,48 @@ tuner.apply_parameters(res.params)
 For example tuning hyperparameters (with CMA-ES) only on the toy problem (the nominal trajectory is reset each time so they are sampling from noise):
 
 ![toy tuning](https://i.imgur.com/2qtYMwu.gif)
+
+If you want more than just the best solution found, such as if you want diversity
+across hyperparameter values, or if your evaluation function has large uncertainty,
+then you can directly query past results by
+```python
+for res in tuner.optim.all_res:
+    # the cost
+    print(res.metrics['cost'])
+    # extract the parameters
+    params = tuner.config_to_params(res.config)
+    print(params)
+    # apply the parameters to the controller
+    tuner.apply_parameters(params)
+```
+
+Alternatively you can try Quality Diversity optimization using the 
+[CMA-ME optimizer](https://github.com/icaros-usc/pyribs). This optimizer will
+try to optimize for high quality parameters while ensuring there is diversity across
+them. However, it is very slow and you might be better using a `RayOptimizer` and selecting
+for top results while checking for diversity.
+To use it, you need to install
+```python
+pip install ribs
+```
+
+You then use it as
+```python
+import pytorch_mppi.autotune_qd
+
+optim = pytorch_mppi.autotune_qd.CMAMEOpt()
+tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+                                           optimizer=optim)
+
+iterations = 10
+for i in range(iterations):
+    # results of this optimization step are returned
+    res = tuner.optimize_step()
+    # we can render the rollouts in the environment
+    best_params = optim.get_diverse_top_parameters(5)
+    for res in best_params:
+        print(res)
+```
 
 # Tests
 You'll need to install `gym<=0.20` to run the tests (for the `Pendulum-v0` environment).

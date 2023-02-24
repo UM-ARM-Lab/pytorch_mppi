@@ -5,6 +5,7 @@ import window_recorder
 from arm_pytorch_utilities import linalg
 import matplotlib.colors
 from matplotlib import pyplot as plt
+
 from pytorch_mppi.mppi import handle_batch_input
 
 from pytorch_mppi import autotune
@@ -108,8 +109,7 @@ class Toy2DEnvironment:
         # self.dynamics = ScaledLinearDynamics(self.running_cost, B)
 
         self.terminal_scale = terminal_scale
-        if self.visualize:
-            self.start_visualization()
+        self.start_visualization()
 
     def terminal_cost(self, states, actions):
         return self.terminal_scale * self.running_cost(states[..., -1, :])
@@ -125,23 +125,24 @@ class Toy2DEnvironment:
         return c
 
     def start_visualization(self):
-        plt.ion()
-        plt.show()
+        if self.visualize:
+            plt.ion()
+            plt.show()
 
-        self.fig, self.ax = plt.subplots(figsize=(7, 7))
-        self.ax.set_aspect('equal')
-        self.ax.set(xlim=self.state_ranges[0])
-        self.ax.set(ylim=self.state_ranges[0])
+            self.fig, self.ax = plt.subplots(figsize=(7, 7))
+            self.ax.set_aspect('equal')
+            self.ax.set(xlim=self.state_ranges[0])
+            self.ax.set(ylim=self.state_ranges[0])
 
-        self.cmap = "Greys"
-        # artists for clearing / redrawing
-        self.start_artist = None
-        self.goal_artist = None
-        self.cost_artist = None
-        self.rollout_artist = None
-        self.draw_costs()
-        self.draw_start()
-        self.draw_goal()
+            self.cmap = "Greys"
+            # artists for clearing / redrawing
+            self.start_artist = None
+            self.goal_artist = None
+            self.cost_artist = None
+            self.rollout_artist = None
+            self.draw_costs()
+            self.draw_start()
+            self.draw_goal()
 
     def draw_results(self, params, all_results: typing.Sequence[autotune.EvaluationResult]):
         iterations = [res.iteration for res in all_results]
@@ -291,21 +292,21 @@ def main():
     # choose from autotune.AutotuneMPPI.TUNABLE_PARAMS
     params_to_tune = ['sigma', 'horizon', 'lambda']
     # create a tuner with a CMA-ES optimizer
-    tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
-    # tune parameters for a number of iterations
-    with window_recorder.WindowRecorder(["Figure 1"]):
-        iterations = 30
-        for i in range(iterations):
-            # results of this optimization step are returned
-            res = tuner.optimize_step()
-            # we can render the rollouts in the environment
-            env.draw_rollouts(res.rollouts)
-
-    # get best results and apply it to the controller
-    # (by default the controller will take on the latest tuned parameter, which may not be best)
-    res = tuner.get_best_result()
-    tuner.apply_parameters(res.params)
-    env.draw_results(res.params, tuner.results)
+    # tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
+    # # tune parameters for a number of iterations
+    # with window_recorder.WindowRecorder(["Figure 1"]):
+    #     iterations = 30
+    #     for i in range(iterations):
+    #         # results of this optimization step are returned
+    #         res = tuner.optimize_step()
+    #         # we can render the rollouts in the environment
+    #         env.draw_rollouts(res.rollouts)
+    #
+    # # get best results and apply it to the controller
+    # # (by default the controller will take on the latest tuned parameter, which may not be best)
+    # res = tuner.get_best_result()
+    # tuner.apply_parameters(res.params)
+    # env.draw_results(res.params, tuner.results)
 
     try:
         # can also use a Ray Tune optimizer, see
@@ -313,18 +314,35 @@ def main():
         # rather than adapting the current parameters, these optimizers allow you to define a search space for each
         # and will search on that space
         # be sure to close plt windows or else ray will duplicate them
-        from pytorch_mppi import autotune_ray
+        from pytorch_mppi import autotune_global
         from ray.tune.search.hyperopt import HyperOptSearch
         from ray.tune.search.bayesopt import BayesOptSearch
 
         env.visualize = False
         plt.close('all')
-        tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate,
-                                      optimizer=autotune_ray.RayOptimizer(HyperOptSearch))
+        tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+                                                   optimizer=autotune_global.RayOptimizer(HyperOptSearch))
         # ray tuners cannot be tuned iteratively, but you can specify how many iterations to tune for
         res = tuner.optimize_all(100)
+        env.start_visualization()
         env.draw_rollouts(res.rollouts)
         env.draw_results(res.params, tuner.results)
+
+        # can also use quality diversity optimization
+        import pytorch_mppi.autotune_qd
+        optim = pytorch_mppi.autotune_qd.CMAMEOpt()
+        tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+                                                   optimizer=optim)
+
+        iterations = 10
+        for i in range(iterations):
+            # results of this optimization step are returned
+            res = tuner.optimize_step()
+            # we can render the rollouts in the environment
+            best_params = optim.get_diverse_top_parameters(5)
+            for res in best_params:
+                logger.info(res)
+
     except ImportError:
         print("To test the ray tuning, install with:\npip install 'ray[tune]' bayesian-optimization hyperopt")
         pass
