@@ -1,20 +1,19 @@
 import torch
+import typing
+
+import window_recorder
 from arm_pytorch_utilities import linalg
 import matplotlib.colors
 from matplotlib import pyplot as plt
 from pytorch_mppi.mppi import handle_batch_input
 
 from pytorch_mppi import autotune
-from pytorch_mppi import autotune_ray
 
 from pytorch_mppi import MPPI
 from pytorch_seed import seed
 import logging
-import window_recorder
+# import window_recorder
 from contextlib import nullcontext
-
-from ray.tune.search.hyperopt import HyperOptSearch
-from ray.tune.search.bayesopt import BayesOptSearch
 
 plt.switch_backend('Qt5Agg')
 
@@ -24,17 +23,6 @@ logging.basicConfig(level=logging.INFO,
                     datefmt='%m-%d %H:%M:%S')
 
 
-class LinearDynamics:
-    def __init__(self, A, B):
-        self.A = A
-        self.B = B
-
-    @handle_batch_input(n=2)
-    def __call__(self, state, action):
-        nx = self.A @ state + self.B @ action
-        return nx
-
-
 class LinearDeltaDynamics:
     def __init__(self, B):
         self.B = B
@@ -42,6 +30,17 @@ class LinearDeltaDynamics:
     @handle_batch_input(n=2)
     def __call__(self, state, action):
         nx = state + action @ self.B.transpose(0, 1)
+        return nx
+
+
+class ScaledLinearDynamics:
+    def __init__(self, cost, B):
+        self.B = B
+        self.cost = cost
+
+    @handle_batch_input(n=2)
+    def __call__(self, state, action):
+        nx = state + action @ self.B.transpose(0, 1) / torch.log(self.cost(state) + 1e-8).reshape(-1, 1) * 2
         return nx
 
 
@@ -74,12 +73,12 @@ class HillCost:
         return c
 
 
-class Experiment(autotune.AutotuneMPPI):
-    def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", r=0.01, evaluate_running_cost=True,
+class Toy2DEnvironment:
+    def __init__(self, start=None, goal=None, dtype=torch.double, device="cpu", evaluate_running_cost=True,
                  visualize=True,
-                 num_refinement_steps=5,
-                 num_trajectories=5, num_samples=500, horizon=20,
-                 **kwargs):
+                 num_trajectories=5,
+                 terminal_scale=100,
+                 r=0.01):
         self.d = device
         self.dtype = dtype
         self.state_ranges = [
@@ -88,12 +87,8 @@ class Experiment(autotune.AutotuneMPPI):
         ]
         self.evaluate_running_cost = evaluate_running_cost
         self.num_trajectories = num_trajectories
-        self.num_refinement_steps = num_refinement_steps
         self.visualize = visualize
         self.nx = 2
-
-        B = torch.tensor([[0.5, 0], [0, -0.5]], device=self.d, dtype=self.dtype)
-        self.dynamics = LinearDeltaDynamics(B)
 
         self.start = start or torch.tensor([-3, -2], device=self.d, dtype=self.dtype)
         self.goal = goal or torch.tensor([2, 2], device=self.d, dtype=self.dtype)
@@ -105,61 +100,16 @@ class Experiment(autotune.AutotuneMPPI):
         self.costs.append(goal_cost)
 
         # for increasing difficulty, we add some "hills"
-        self.costs.append(HillCost(torch.tensor([[0.1, 0.05], [0.05, 0.1]], device=self.d, dtype=self.dtype) * 1.5,
-                                   torch.tensor([-0.5, -1], device=self.d, dtype=self.dtype), cost_at_center=60))
+        self.costs.append(HillCost(torch.tensor([[0.1, 0.05], [0.05, 0.1]], device=self.d, dtype=self.dtype) * 2.5,
+                                   torch.tensor([-0.5, -1.], device=self.d, dtype=self.dtype), cost_at_center=200))
 
+        B = torch.tensor([[0.5, 0], [0, -0.5]], device=self.d, dtype=self.dtype)
+        self.dynamics = LinearDeltaDynamics(B)
+        # self.dynamics = ScaledLinearDynamics(self.running_cost, B)
+
+        self.terminal_scale = terminal_scale
         if self.visualize:
             self.start_visualization()
-
-        self.terminal_scale = torch.tensor([10], dtype=self.dtype, device=self.d)
-        sigma = torch.tensor([5.2, 5.2], dtype=self.dtype, device=self.d)
-        mppi = MPPI(self.dynamics, self.running_cost, 2, noise_sigma=torch.diag(sigma),
-                    num_samples=num_samples,
-                    horizon=horizon, device=self.d,
-                    terminal_state_cost=self.terminal_cost,
-                    lambda_=1)
-        super().__init__(mppi, ['sigma'], self._create_evaluate(), **kwargs)
-        # use fixed nominal trajectory
-        self.nominal_trajectory = self.mppi.U.clone()
-
-    def _create_evaluate(self, trajectory=None, num_runs=None):
-        """Produce costs and rollouts from the current state of MPPI"""
-
-        # cost is of the terminal cost of the rollout from MPPI running for 1 iteration, averaged over some trials
-        # inheriting classes should change this to other evaluation methods
-        def _evaluate():
-            nonlocal trajectory, num_runs
-            costs = []
-            rollouts = []
-            for j in range(self.num_trajectories):
-                if trajectory is None:
-                    trajectory = self.nominal_trajectory
-                self.mppi.U = trajectory.clone()
-                if num_runs is None:
-                    num_runs = self.num_refinement_steps
-                for k in range(num_runs):
-                    self.mppi.command(self.start, shift_nominal_trajectory=False)
-
-                # with torch.no_grad():
-                rollout = self.mppi.get_rollouts(self.start)
-                rollouts.append(rollout)
-
-                this_cost = 0
-                rollout = rollout[0]
-                if self.evaluate_running_cost:
-                    for t in range(len(rollout) - 1):
-                        this_cost = this_cost + self.running_cost(rollout[t], self.mppi.U[t])
-                this_cost = this_cost + self.terminal_cost(rollout, self.mppi.U)
-
-                costs.append(this_cost)
-            return autotune.EvaluationResult(torch.cat(costs), torch.cat(rollouts))
-
-        return _evaluate
-
-    def log_current_result(self, res):
-        with torch.no_grad():
-            super().log_current_result(res)
-            self.draw_rollouts(res.rollouts)
 
     def terminal_cost(self, states, actions):
         return self.terminal_scale * self.running_cost(states[..., -1, :])
@@ -193,9 +143,9 @@ class Experiment(autotune.AutotuneMPPI):
         self.draw_start()
         self.draw_goal()
 
-    def draw_results(self):
-        iterations = [res['iteration'] for res in self.results]
-        loss = [res['cost'] for res in self.results]
+    def draw_results(self, params, all_results: typing.Sequence[autotune.EvaluationResult]):
+        iterations = [res.iteration for res in all_results]
+        loss = [res.costs.mean().item() for res in all_results]
 
         # loss curve
         fig, ax = plt.subplots()
@@ -205,8 +155,8 @@ class Experiment(autotune.AutotuneMPPI):
         plt.pause(0.001)
         plt.savefig('cost.png')
 
-        if 'sigma' in self.params:
-            sigma = [res['params']['sigma'] for res in self.results]
+        if 'sigma' in params:
+            sigma = [res.params['sigma'] for res in all_results]
             sigma = torch.stack(sigma)
             fig, ax = plt.subplots(nrows=2, sharex=True)
             ax[0].plot(iterations, sigma[:, 0])
@@ -246,7 +196,7 @@ class Experiment(autotune.AutotuneMPPI):
 
         self.clear_artist(self.cost_artist)
         a = []
-        a.append(self.ax.contourf(x, z, v, levels=[2, 4, 8, 16, 24, 32, 40, 50, 60, 70, 80, 90, 100], norm=norm,
+        a.append(self.ax.contourf(x, z, v, levels=[2, 4, 8, 16, 24, 32, 40, 50, 60, 80, 100, 150, 200, 250], norm=norm,
                                   cmap=self.cmap))
         a.append(self.ax.contour(x, z, v, levels=a[0].levels, colors='k', linestyles='dashed'))
         a.append(self.ax.clabel(a[1], a[1].levels, inline=True, fontsize=13))
@@ -268,10 +218,13 @@ class Experiment(autotune.AutotuneMPPI):
         self.start_artist = self.draw_state(self.start, "tab:blue", label='start')
 
     def draw_goal(self):
+        # when combined with other costs it's no longer the single goal so no need for label
+        return
         if not self.visualize:
             return
         self.clear_artist(self.goal_artist)
-        self.goal_artist = self.draw_state(self.goal, "tab:green", label='goal')
+        # when combined with other costs it's no longer the single goal so no need for label
+        self.goal_artist = self.draw_state(self.goal, "tab:green")  # , label='goal')
 
     def draw_state(self, state, color, label=None, ox=-0.3, oy=0.3):
         artists = [self.ax.scatter(state[0].cpu(), state[1].cpu(), color=color)]
@@ -281,48 +234,100 @@ class Experiment(autotune.AutotuneMPPI):
         return artists
 
 
-class RayExperiment(Experiment):
-    def __init__(self, *args, visualize=True, **kwargs):
-        self._actually_visualize = visualize
-        super().__init__(*args, visualize=False, **kwargs)
-
-    def optimize_all(self, iterations):
-        assert isinstance(self.optim, autotune_ray.RayOptimizer)
-        self.optim.optimize_all(iterations)
-
-        # avoid having too many plots pop up
-        self.visualize = self._actually_visualize
-        self.start_visualization()
-        for iteration in range(iterations):
-            res = self.optim.all_res.results[iteration]
-            self.apply_parameters(self.optim.config_to_params(res.config))
-            eval_res = self.evaluate_fn()
-            self.log_current_result(eval_res)
-        self.visualize = False
-
-        # best parameters
-        self.apply_parameters(self.optim.config_to_params(self.optim.all_res.get_best_result().config))
-        best_res = self.evaluate_fn()
-        self.log_current_result(best_res)
-        return best_res
-
-
 def main():
     seed(1)
-    # torch.autograd.set_detect_anomaly(True)
-    # exp = Experiment(visualize=False, num_refinement_steps=10, optimizer=autotune.CMAESOpt(sigma=1.0))
-    # with window_recorder.WindowRecorder(["Figure 1"]) if exp.visualize else nullcontext():
-    #     iterations = 50
-    #     for i in range(iterations):
-    #         exp.optimize_step()
-    # exp = RayExperiment(visualize=True, num_refinement_steps=10, optimizer=BayesOptSearch)
+    device = "cpu"
+    dtype = torch.double
 
-    # exp = Experiment(visualize=False, num_refinement_steps=10, optimizer=autotune_ray.RayOptimizer(BayesOptSearch))
-    exp = Experiment(visualize=False, num_refinement_steps=10, optimizer=autotune_ray.RayOptimizer(HyperOptSearch))
-    exp.optimize_all(50)
-    exp.draw_results()
+    # create toy environment to do on control on (default start and goal)
+    env = Toy2DEnvironment(visualize=True, terminal_scale=10)
 
-    # input('finished')
+    # create MPPI with some initial parameters
+    mppi = MPPI(env.dynamics, env.running_cost, 2,
+                noise_sigma=torch.diag(torch.tensor([5., 5.], dtype=dtype, device=device)),
+                num_samples=500,
+                horizon=20, device=device,
+                terminal_state_cost=env.terminal_cost,
+                u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
+                lambda_=1)
+
+    nominal_trajectory = mppi.U.clone()
+    # choose from autotune.AutotuneMPPI.TUNABLE_PARAMS
+    params_to_tune = ['sigma', 'horizon', 'lambda']
+
+    # parameters for our sample evaluation function - lots of choices for the evaluation function
+    evaluate_running_cost = True
+    num_refinement_steps = 10
+    num_trajectories = 5
+
+    def evaluate():
+        costs = []
+        rollouts = []
+        # we sample multiple trajectories for the same start to goal problem, but in your case you should consider
+        # evaluating over a diverse dataset of trajectories
+        for j in range(num_trajectories):
+            mppi.U = nominal_trajectory.clone()
+            # the nominal trajectory at the start will be different if the horizon's changed
+            mppi.change_horizon(mppi.T)
+            # usually MPPI will have its nominal trajectory warm-started from the previous iteration
+            # for a fair test of tuning we will reset its nominal trajectory to the same random one each time
+            # we manually warm it by refining it for some steps
+            for k in range(num_refinement_steps):
+                mppi.command(env.start, shift_nominal_trajectory=False)
+
+            rollout = mppi.get_rollouts(env.start)
+
+            this_cost = 0
+            rollout = rollout[0]
+            # here we evaluate on the rollout MPPI cost of the resulting trajectories
+            # alternative costs for tuning the parameters are possible, such as just considering terminal cost
+            if evaluate_running_cost:
+                for t in range(len(rollout) - 1):
+                    this_cost = this_cost + env.running_cost(rollout[t], mppi.U[t])
+            this_cost = this_cost + env.terminal_cost(rollout, mppi.U)
+
+            rollouts.append(rollout)
+            costs.append(this_cost)
+        return autotune.EvaluationResult(torch.stack(costs), torch.stack(rollouts))
+
+    # # create a tuner with a CMA-ES optimizer
+    tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
+    # tune parameters for a number of iterations
+    with window_recorder.WindowRecorder(["Figure 1"]):
+        iterations = 30
+        for i in range(iterations):
+            # results of this optimization step are returned
+            res = tuner.optimize_step()
+            # we can render the rollouts in the environment
+            env.draw_rollouts(res.rollouts)
+
+    # get best results and apply it to the controller
+    # (by default the controller will take on the latest tuned parameter, which may not be best)
+    res = tuner.get_best_result()
+    tuner.apply_parameters(res.params)
+    env.draw_results(res.params, tuner.results)
+
+    try:
+        # can also use a Ray Tune optimizer, see
+        # https://docs.ray.io/en/latest/tune/api_docs/suggestion.html#search-algorithms-tune-search
+        # rather than adapting the current parameters, these optimizers allow you to define a search space for each
+        # and will search on that space
+        # be sure to close plt windows or else ray will duplicate them
+        from pytorch_mppi import autotune_ray
+        from ray.tune.search.hyperopt import HyperOptSearch
+        from ray.tune.search.bayesopt import BayesOptSearch
+
+        env.visualize = False
+        plt.close('all')
+        tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate,
+                                      optimizer=autotune_ray.RayOptimizer(HyperOptSearch))
+        # ray tuners cannot be tuned iteratively, but you can specify how many iterations to tune for
+        res = tuner.optimize_all(100)
+        env.draw_rollouts(res.rollouts)
+        env.draw_results(res.params, tuner.results)
+    except ImportError:
+        print("To test the ray tuning, install with:\npip install 'ray[tune]' bayesian-optimization hyperopt")
+        pass
 
 
 if __name__ == "__main__":

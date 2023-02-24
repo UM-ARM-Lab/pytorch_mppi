@@ -17,8 +17,14 @@ logger = logging.getLogger(__file__)
 
 
 class EvaluationResult(typing.NamedTuple):
+    # (N) cost for each trajectory evaluated
     costs: torch.Tensor
+    # (N x H x nx) where H is the horizon and nx is the state dimension
     rollouts: torch.Tensor
+    # parameter values populated by the tuner after evaluation returns
+    params: dict = None
+    # iteration number populated by the tuner after evaluation returns
+    iteration: int = None
 
 
 class Optimizer:
@@ -101,23 +107,28 @@ class AutotuneMPPI:
         self.define_parameters(params_to_tune)
         self.optim.setup_optimization()
 
-    def optimize_step(self):
+    def optimize_step(self) -> EvaluationResult:
         res = self.optim.optimize_step()
-        self.log_current_result(res)
+        res = self.log_current_result(res)
+        return res
 
-    def optimize_all(self, iterations):
+    def optimize_all(self, iterations) -> EvaluationResult:
         res = self.optim.optimize_all(iterations)
-        self.log_current_result(res)
+        res = self.log_current_result(res)
+        return res
+
+    def get_best_result(self) -> EvaluationResult:
+        return min(self.results, key=lambda res: res.costs.mean().item())
 
     def log_current_result(self, res: EvaluationResult):
         with torch.no_grad():
             iteration = len(self.results)
+            res = res._replace(iteration=iteration,
+                               params={k: v.detach().clone() if torch.is_tensor(v) else v for k, v in
+                                       self.params.items()})
             logger.info(f"i:{iteration} cost: {res.costs.mean().item()} params:{self.params}")
-            self.results.append({
-                'iteration': iteration,
-                'cost': res.costs.mean().item(),
-                'params': {k: v.detach().clone() for k, v in self.params.items()},
-            })
+            self.results.append(res)
+        return res
 
     def define_parameters(self, params_to_tune: typing.Sequence[str]):
         pm = {}
@@ -168,8 +179,7 @@ class AutotuneMPPI:
             v = max(round(x[i]), 1)
             params['horizon'] = v
             i += 1
-        self.params = params
-        self.apply_parameters(self.params)
+        self.apply_parameters(params)
 
     def apply_parameters(self, params):
         if 'sigma' in params:
@@ -184,3 +194,4 @@ class AutotuneMPPI:
             self.mppi.lambda_ = params['lambda']
         if 'horizon' in params:
             self.mppi.change_horizon(params['horizon'])
+        self.params = params
