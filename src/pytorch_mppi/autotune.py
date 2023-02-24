@@ -50,6 +50,9 @@ class Optimizer:
 
 
 class CMAESOpt(Optimizer):
+    """Optimize using CMA-ES, an evolutionary algorithm that maintains a Gaussian population,
+    starting around the initial parameters with a variance (potentially different for each hyperparameter)."""
+
     def __init__(self, population=10, sigma=0.1):
         self.population = population
         self.sigma = sigma
