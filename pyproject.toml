@@ -67,7 +67,7 @@ dependencies = [# Optional
 [project.optional-dependencies] # Optional
 tune = [
     'cma',
-    'ray["tune"]',
+    'ray[tune]',
     'bayesian-optimization',
     'hyperopt',
 ]
@@ -78,7 +78,7 @@ test = [
     'pyglet==1.5.27',
     'window-recorder',
     'cma',
-    'ray["tune"]',
+    'ray[tune]',
     'bayesian-optimization',
     'hyperopt',
 ]
