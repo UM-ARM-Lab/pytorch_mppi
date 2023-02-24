@@ -251,10 +251,8 @@ def main():
                 u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
                 lambda_=1)
 
+    # use the same nominal trajectory to start with for all the evaluations for fairness
     nominal_trajectory = mppi.U.clone()
-    # choose from autotune.AutotuneMPPI.TUNABLE_PARAMS
-    params_to_tune = ['sigma', 'horizon', 'lambda']
-
     # parameters for our sample evaluation function - lots of choices for the evaluation function
     evaluate_running_cost = True
     num_refinement_steps = 10
@@ -290,7 +288,9 @@ def main():
             costs.append(this_cost)
         return autotune.EvaluationResult(torch.stack(costs), torch.stack(rollouts))
 
-    # # create a tuner with a CMA-ES optimizer
+    # choose from autotune.AutotuneMPPI.TUNABLE_PARAMS
+    params_to_tune = ['sigma', 'horizon', 'lambda']
+    # create a tuner with a CMA-ES optimizer
     tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
     # tune parameters for a number of iterations
     with window_recorder.WindowRecorder(["Figure 1"]):
