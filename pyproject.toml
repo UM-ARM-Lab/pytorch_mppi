@@ -1,6 +1,6 @@
 [project]
 name = "pytorch_mppi"
-version = "0.4.2"
+version = "0.5.0"
 description = "Model Predictive Path Integral (MPPI) implemented in pytorch"
 readme = "README.md" # Optional
 
@@ -65,11 +65,22 @@ dependencies = [# Optional
 # Similar to `dependencies` above, these must be valid existing
 # projects.
 [project.optional-dependencies] # Optional
+tune = [
+    'cma',
+    'ray["tune"]',
+    'bayesian-optimization',
+    'hyperopt',
+]
 test = [
     "pytest",
     'gym<=0.20',
     'pygame',
-    'pyglet==1.5.27'
+    'pyglet==1.5.27',
+    'window-recorder',
+    'cma',
+    'ray["tune"]',
+    'bayesian-optimization',
+    'hyperopt',
 ]
 
 # List URLs that are relevant to your project
