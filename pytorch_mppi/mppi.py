@@ -5,7 +5,7 @@ import time
 import numpy as np
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
-
+from torch.distributions.uniform import Uniform
 logger = logging.getLogger(__name__)
 
 
@@ -66,7 +66,10 @@ def handle_batch_input(n):
             else:
                 if is_tensor_like(ret):
                     if len(ret.shape) == n:
-                        ret = ret.view(*batch_dims, *ret.shape[-(n - 1):])
+                        # print(ret.shape, batch_dims)
+                        # ret = torch.tensor(ret[np.newaxis, :, :]).expand(batch_dims[0], *ret.shape)
+                        ret = np.repeat(ret[np.newaxis, :, :], batch_dims[0], axis = 0)
+                        # ret = ret.view(*batch_dims, *ret.shape[-(n - 1):])
                     else:
                         ret = ret.view(*batch_dims)
             return ret
@@ -99,7 +102,7 @@ class MPPI():
                  step_dependent_dynamics=False,
                  rollout_samples=1,
                  rollout_var_cost=0,
-                 rollout_var_discount=0.95,
+                 rollout_var_discount=0.1, #0.95
                  sample_null_action=False,
                  noise_abs_cost=False):
         """
@@ -277,7 +280,7 @@ class MPPI():
         if self.terminal_state_cost:
             c = self.terminal_state_cost(states, actions)
             cost_samples += c
-        cost_total += cost_samples.mean(dim=0)
+        cost_total += cost_samples.squeeze() #.mean(dim=0)
         cost_total += cost_var * self.rollout_var_cost
         return cost_total, states, actions
 
