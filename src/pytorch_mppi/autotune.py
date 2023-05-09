@@ -234,12 +234,9 @@ class Autotune:
     """
     eps = 0.0001
 
-    def __init__(self, mppi: MPPI, params_to_tune: typing.Sequence[TunableParameter],
+    def __init__(self, params_to_tune: typing.Sequence[TunableParameter],
                  evaluate_fn: typing.Callable[[], EvaluationResult], optimizer=CMAESOpt()):
-        self.mppi = mppi
         self.evaluate_fn = evaluate_fn
-        self.d = mppi.d
-        self.dtype = mppi.dtype
 
         self.params = params_to_tune
         self.param_values = None

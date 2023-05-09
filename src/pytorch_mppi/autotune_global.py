@@ -1,6 +1,5 @@
 import abc
 import numpy as np
-import torch
 
 # pip install "ray[tune]" bayesian-optimization hyperopt
 from ray import tune
@@ -99,7 +98,7 @@ class AutotuneGlobal(autotune.Autotune):
         for p in self.params:
             assert isinstance(p, GlobalTunableParameter)
             v.extend(p.get_linearized_search_space_value(param_values))
-        return torch.tensor(v, device=self.d, dtype=self.dtype)
+        return np.array(v)
 
     def initial_value(self):
         init = {}

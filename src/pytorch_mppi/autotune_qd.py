@@ -66,7 +66,7 @@ class CMAMEOpt(autotune.Optimizer):
             res = self.tuner.evaluate_fn()
             cost_per_param.append(res.costs.mean().cpu().numpy())
             all_rollouts.append(res.rollouts)
-            behavior = self.tuner.linearize_params(full_param).detach().cpu().numpy()
+            behavior = self.tuner.linearize_params(full_param)
             bcs.append(behavior)
 
         cost_per_param = np.array(cost_per_param)

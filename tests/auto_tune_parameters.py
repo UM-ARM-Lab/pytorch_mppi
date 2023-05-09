@@ -292,7 +292,7 @@ def main():
     # choose from autotune.AutotuneMPPI.TUNABLE_PARAMS
     params_to_tune = [autotune.SigmaParameter(mppi), autotune.HorizonParameter(mppi), autotune.LambdaParameter(mppi)]
     # create a tuner with a CMA-ES optimizer
-    # tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
+    # tuner = autotune.Autotune(params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
     # # tune parameters for a number of iterations
     # with window_recorder.WindowRecorder(["Figure 1"]):
     #     iterations = 30
@@ -323,7 +323,7 @@ def main():
                           autotune_global.LambdaGlobalParameter(mppi)]
         env.visualize = False
         plt.close('all')
-        tuner = autotune_global.AutotuneGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+        tuner = autotune_global.AutotuneGlobal(params_to_tune, evaluate_fn=evaluate,
                                                optimizer=autotune_global.RayOptimizer(HyperOptSearch))
         # ray tuners cannot be tuned iteratively, but you can specify how many iterations to tune for
         res = tuner.optimize_all(100)

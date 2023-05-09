@@ -163,7 +163,7 @@ With this we have enough to start tuning. For example, we can tune iteratively w
 # these are subclass of TunableParameter (specifically MPPIParameter) that we want to tune
 params_to_tune = [autotune.SigmaParameter(mppi), autotune.HorizonParameter(mppi), autotune.LambdaParameter(mppi)]
 # create a tuner with a CMA-ES optimizer
-tuner = autotune.Autotune(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
+tuner = autotune.Autotune(params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
 # tune parameters for a number of iterations
 iterations = 30
 for i in range(iterations):
@@ -197,7 +197,7 @@ params_to_tune = [autotune_global.SigmaGlobalParameter(mppi),
 # be sure to close any figures before ray tune optimization or they will be duplicated
 env.visualize = False
 plt.close('all')
-tuner = autotune_global.AutotuneGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+tuner = autotune_global.AutotuneGlobal(params_to_tune, evaluate_fn=evaluate,
                                        optimizer=autotune_global.RayOptimizer(HyperOptSearch))
 # ray tuners cannot be tuned iteratively, but you can specify how many iterations to tune for
 res = tuner.optimize_all(100)
@@ -239,7 +239,7 @@ You then use it as
 import pytorch_mppi.autotune_qd
 
 optim = pytorch_mppi.autotune_qd.CMAMEOpt()
-tuner = autotune_global.AutotuneGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+tuner = autotune_global.AutotuneGlobal(params_to_tune, evaluate_fn=evaluate,
                                        optimizer=optim)
 
 iterations = 10
