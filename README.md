@@ -86,6 +86,9 @@ is implemented. You can select from a variety of cutting edge black-box optimize
 [fmfn/BayesianOptimization](https://github.com/fmfn/BayesianOptimization), and so on.
 See `tests/auto_tune_parameters.py` for an example. A tutorial based on it follows.
 
+The tuner can be used for other controllers as well, but you will need to define the appropriate
+`TunableParameter` subclasses.
+
 First we create a toy 2D environment to do controls on and create the controller with some
 default parameters.
 ```python
@@ -155,22 +158,23 @@ def evaluate():
 ```
 
 With this we have enough to start tuning. For example, we can tune iteratively with the CMA-ES optimizer
+
 ```python
-  # choose from autotune.AutotuneMPPI.TUNABLE_PARAMS
-params_to_tune = ['sigma', 'horizon', 'lambda']
+# these are subclass of TunableParameter (specifically MPPIParameter) that we want to tune
+params_to_tune = [autotune.SigmaParameter(mppi), autotune.HorizonParameter(mppi), autotune.LambdaParameter(mppi)]
 # create a tuner with a CMA-ES optimizer
-tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
+tuner = autotune.Autotune(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
 # tune parameters for a number of iterations
 iterations = 30
 for i in range(iterations):
-    # results of this optimization step are returned
-    res = tuner.optimize_step()
-    # we can render the rollouts in the environment
-    env.draw_rollouts(res.rollouts)
+  # results of this optimization step are returned
+  res = tuner.optimize_step()
+  # we can render the rollouts in the environment
+  env.draw_rollouts(res.rollouts)
 # get best results and apply it to the controller
 # (by default the controller will take on the latest tuned parameter, which may not be best)
 res = tuner.get_best_result()
-tuner.apply_parameters(res.params)
+tuner.apply_parameters(res.param_values)
 ```
 This is a local search method that optimizes starting from the initially defined parameters.
 For global searching, we use ray tune compatible searching algorithms. Note that you can modify the
@@ -185,11 +189,16 @@ from pytorch_mppi import autotune_global
 from ray.tune.search.hyperopt import HyperOptSearch
 from ray.tune.search.bayesopt import BayesOptSearch
 
+# the global version of the parameters define a reasonable search space for each parameter
+params_to_tune = [autotune_global.SigmaGlobalParameter(mppi),
+                  autotune_global.HorizonGlobalParameter(mppi),
+                  autotune_global.LambdaGlobalParameter(mppi)]
+
 # be sure to close any figures before ray tune optimization or they will be duplicated
 env.visualize = False
 plt.close('all')
-tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
-                                           optimizer=autotune_global.RayOptimizer(HyperOptSearch))
+tuner = autotune_global.AutotuneGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+                                       optimizer=autotune_global.RayOptimizer(HyperOptSearch))
 # ray tuners cannot be tuned iteratively, but you can specify how many iterations to tune for
 res = tuner.optimize_all(100)
 res = tuner.get_best_result()
@@ -225,21 +234,22 @@ pip install ribs
 ```
 
 You then use it as
+
 ```python
 import pytorch_mppi.autotune_qd
 
 optim = pytorch_mppi.autotune_qd.CMAMEOpt()
-tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
-                                           optimizer=optim)
+tuner = autotune_global.AutotuneGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+                                       optimizer=optim)
 
 iterations = 10
 for i in range(iterations):
-    # results of this optimization step are returned
-    res = tuner.optimize_step()
-    # we can render the rollouts in the environment
-    best_params = optim.get_diverse_top_parameters(5)
-    for res in best_params:
-        print(res)
+  # results of this optimization step are returned
+  res = tuner.optimize_step()
+  # we can render the rollouts in the environment
+  best_params = optim.get_diverse_top_parameters(5)
+  for res in best_params:
+    print(res)
 ```
 
 # Tests

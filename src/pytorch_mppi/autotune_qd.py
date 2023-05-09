@@ -4,7 +4,7 @@ import numpy as np
 import ribs
 
 from pytorch_mppi import autotune
-from pytorch_mppi.autotune_global import AutotuneMPPIGlobal
+from pytorch_mppi.autotune_global import AutotuneGlobal
 
 
 class CMAMEOpt(autotune.Optimizer):
@@ -27,7 +27,7 @@ class CMAMEOpt(autotune.Optimizer):
         super().__init__()
 
     def setup_optimization(self):
-        if not isinstance(self.tuner, AutotuneMPPIGlobal):
+        if not isinstance(self.tuner, AutotuneGlobal):
             raise RuntimeError(f"Quality diversity optimizers require global search space information provided "
                                f"by AutotuneMPPIGlobal")
 
@@ -51,7 +51,7 @@ class CMAMEOpt(autotune.Optimizer):
         self.optim = ribs.schedulers.Scheduler(self.archive, emitters)
 
     def optimize_step(self):
-        if not isinstance(self.tuner, AutotuneMPPIGlobal):
+        if not isinstance(self.tuner, AutotuneGlobal):
             raise RuntimeError(f"Quality diversity optimizers require global search space information provided "
                                f"by AutotuneMPPIGlobal")
 

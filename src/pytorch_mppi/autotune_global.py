@@ -1,3 +1,4 @@
+import abc
 import numpy as np
 import torch
 
@@ -8,52 +9,23 @@ from pytorch_mppi import autotune
 from ray.tune.search.hyperopt import HyperOptSearch
 
 
-class AutotuneMPPIGlobal(autotune.AutotuneMPPI):
-    def __init__(self, *args,
-                 sigma_search_space=tune.loguniform(1e-4, 1e2),
-                 mu_search_space=tune.uniform(-1, 1),
-                 lambda_search_space=tune.loguniform(1e-5, 1e3),
-                 horizon_search_space=tune.randint(1, 50),
-                 **kwargs):
-        self.sigma_search_space = sigma_search_space
-        self.mu_search_space = mu_search_space
-        self.lambda_search_space = lambda_search_space
-        self.horizon_search_space = horizon_search_space
-        super().__init__(*args, **kwargs)
+class GlobalTunableParameter(autotune.TunableParameter, abc.ABC):
+    def __init__(self, search_space):
+        self.search_space = search_space
 
-    def search_space(self):
-        nu = self.mppi.nu
-        p = self.params
-        space = {}
-        if 'sigma' in p:
-            space.update({f"sigma{i}": self.sigma_search_space for i in range(nu)})
-        if 'mu' in p:
-            space.update({f"mu{i}": self.mu_search_space for i in range(nu)})
-        if 'lambda' in p:
-            space['lambda'] = self.lambda_search_space
-        if 'horizon' in p:
-            space['horizon'] = self.horizon_search_space
-        return space
+    @abc.abstractmethod
+    def total_search_space(self) -> dict:
+        """Return the potentially multidimensional search space for this parameter, which is a dictionary mapping
+        each of the parameter's corresponding config names to a search space."""
 
-    def linearized_search_space(self):
-        return {k: self._linearize_search_space(space) for k, space in self.search_space().items()}
-
-    def linearize_params(self, params):
-        nu = self.mppi.nu
-        p = params
-        v = []
-        if 'sigma' in p:
-            v.extend([self._linearize_space_value(self.sigma_search_space, p['sigma'][i].item()) for i in range(nu)])
-        if 'mu' in p:
-            v.extend([self._linearize_space_value(self.mu_search_space, p['mu'][i].item()) for i in range(nu)])
-        if 'lambda' in p:
-            v.append(self._linearize_space_value(self.lambda_search_space, p['lambda']))
-        if 'horizon' in p:
-            v.append(self._linearize_space_value(self.horizon_search_space, p['horizon']))
-        return torch.tensor(v, device=self.d, dtype=self.dtype)
+    def get_linearized_search_space_value(self, param_values):
+        if self.dim() == 1:
+            return [self._linearize_space_value(self.search_space, param_values[self.name()])]
+        return [self._linearize_space_value(self.search_space, param_values[f"{self.name()}"][i].item()) for i in
+                range(self.dim())]
 
     @staticmethod
-    def _linearize_search_space(space):
+    def linearize_search_space(space):
         # tune doesn't have public API for type checking samplers
         sampler = space.get_sampler()
         if hasattr(sampler, 'base'):
@@ -74,18 +46,66 @@ class AutotuneMPPIGlobal(autotune.AutotuneMPPI):
             return np.round(np.divide(v, sampler.q)) * sampler.q
         return v
 
+
+class SigmaGlobalParameter(autotune.SigmaParameter, GlobalTunableParameter):
+    def __init__(self, *args, search_space=tune.loguniform(1e-4, 1e2)):
+        super().__init__(*args)
+        GlobalTunableParameter.__init__(self, search_space)
+
+    def total_search_space(self) -> dict:
+        return {f"{self.name()}{i}": self.search_space for i in range(self.mppi.nu)}
+
+
+class MuGlobalParameter(autotune.MuParameter, GlobalTunableParameter):
+    def __init__(self, *args, search_space=tune.uniform(-1, 1)):
+        super().__init__(*args)
+        GlobalTunableParameter.__init__(self, search_space)
+
+    def total_search_space(self) -> dict:
+        return {f"{self.name()}{i}": self.search_space for i in range(self.mppi.nu)}
+
+
+class LambdaGlobalParameter(autotune.LambdaParameter, GlobalTunableParameter):
+    def __init__(self, *args, search_space=tune.loguniform(1e-5, 1e3)):
+        super().__init__(*args)
+        GlobalTunableParameter.__init__(self, search_space)
+
+    def total_search_space(self) -> dict:
+        return {self.name(): self.search_space}
+
+
+class HorizonGlobalParameter(autotune.HorizonParameter, GlobalTunableParameter):
+    def __init__(self, *args, search_space=tune.randint(1, 50)):
+        super().__init__(*args)
+        GlobalTunableParameter.__init__(self, search_space)
+
+    def total_search_space(self) -> dict:
+        return {self.name(): self.search_space}
+
+
+class AutotuneGlobal(autotune.Autotune):
+    def search_space(self):
+        space = {}
+        for p in self.params:
+            assert isinstance(p, GlobalTunableParameter)
+            space.update(p.total_search_space())
+        return space
+
+    def linearized_search_space(self):
+        return {k: GlobalTunableParameter.linearize_search_space(space) for k, space in self.search_space().items()}
+
+    def linearize_params(self, param_values):
+        v = []
+        for p in self.params:
+            assert isinstance(p, GlobalTunableParameter)
+            v.extend(p.get_linearized_search_space_value(param_values))
+        return torch.tensor(v, device=self.d, dtype=self.dtype)
+
     def initial_value(self):
-        nu = self.mppi.nu
-        p = self.params
         init = {}
-        if 'sigma' in p:
-            init.update({f"sigma{i}": p['sigma'][i].item() for i in range(nu)})
-        if 'mu' in p:
-            init.update({f"mu{i}": p['mu'][i].item() for i in range(nu)})
-        if 'lambda' in p:
-            init['lambda'] = p['lambda']
-        if 'horizon' in p:
-            init['horizon'] = p['horizon']
+        for p in self.params:
+            assert isinstance(p, GlobalTunableParameter)
+            init.update(p.get_config_from_parameter_value(self.param_values[p.name()]))
         return init
 
 
@@ -98,7 +118,7 @@ class RayOptimizer(autotune.Optimizer):
         super().__init__()
 
     def setup_optimization(self):
-        if not isinstance(self.tuner, AutotuneMPPIGlobal):
+        if not isinstance(self.tuner, AutotuneGlobal):
             raise RuntimeError(f"Ray optimizers require global search space information provided by AutotuneMPPIGlobal")
         space = self.tuner.search_space()
         init = self.tuner.initial_value()
@@ -130,5 +150,3 @@ class RayOptimizer(autotune.Optimizer):
         self.tuner.apply_parameters(self.tuner.config_to_params(self.all_res.get_best_result().config))
         res = self.tuner.evaluate_fn()
         return res
-
-

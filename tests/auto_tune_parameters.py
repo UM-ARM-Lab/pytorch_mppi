@@ -290,7 +290,7 @@ def main():
         return autotune.EvaluationResult(torch.stack(costs), torch.stack(rollouts))
 
     # choose from autotune.AutotuneMPPI.TUNABLE_PARAMS
-    params_to_tune = ['sigma', 'horizon', 'lambda']
+    params_to_tune = [autotune.SigmaParameter(mppi), autotune.HorizonParameter(mppi), autotune.LambdaParameter(mppi)]
     # create a tuner with a CMA-ES optimizer
     # tuner = autotune.AutotuneMPPI(mppi, params_to_tune, evaluate_fn=evaluate, optimizer=autotune.CMAESOpt(sigma=1.0))
     # # tune parameters for a number of iterations
@@ -318,30 +318,34 @@ def main():
         from ray.tune.search.hyperopt import HyperOptSearch
         from ray.tune.search.bayesopt import BayesOptSearch
 
+        params_to_tune = [autotune_global.SigmaGlobalParameter(mppi),
+                          autotune_global.HorizonGlobalParameter(mppi),
+                          autotune_global.LambdaGlobalParameter(mppi)]
         env.visualize = False
         plt.close('all')
-        tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
-                                                   optimizer=autotune_global.RayOptimizer(HyperOptSearch))
+        tuner = autotune_global.AutotuneGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+                                               optimizer=autotune_global.RayOptimizer(HyperOptSearch))
         # ray tuners cannot be tuned iteratively, but you can specify how many iterations to tune for
         res = tuner.optimize_all(100)
+        env.visualize = True
         env.start_visualization()
         env.draw_rollouts(res.rollouts)
         env.draw_results(res.params, tuner.results)
 
         # can also use quality diversity optimization
-        import pytorch_mppi.autotune_qd
-        optim = pytorch_mppi.autotune_qd.CMAMEOpt()
-        tuner = autotune_global.AutotuneMPPIGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
-                                                   optimizer=optim)
-
-        iterations = 10
-        for i in range(iterations):
-            # results of this optimization step are returned
-            res = tuner.optimize_step()
-            # we can render the rollouts in the environment
-            best_params = optim.get_diverse_top_parameters(5)
-            for res in best_params:
-                logger.info(res)
+        # import pytorch_mppi.autotune_qd
+        # optim = pytorch_mppi.autotune_qd.CMAMEOpt()
+        # tuner = autotune_global.AutotuneGlobal(mppi, params_to_tune, evaluate_fn=evaluate,
+        #                                        optimizer=optim)
+        #
+        # iterations = 10
+        # for i in range(iterations):
+        #     # results of this optimization step are returned
+        #     res = tuner.optimize_step()
+        #     # we can render the rollouts in the environment
+        #     best_params = optim.get_diverse_top_parameters(5)
+        #     for res in best_params:
+        #         logger.info(res)
 
     except ImportError:
         print("To test the ray tuning, install with:\npip install 'ray[tune]' bayesian-optimization hyperopt")
