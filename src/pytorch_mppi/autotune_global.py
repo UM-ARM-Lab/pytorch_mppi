@@ -102,9 +102,10 @@ class AutotuneGlobal(autotune.Autotune):
 
     def initial_value(self):
         init = {}
+        param_values = self.get_parameter_values(self.params)
         for p in self.params:
             assert isinstance(p, GlobalTunableParameter)
-            init.update(p.get_config_from_parameter_value(self.param_values[p.name()]))
+            init.update(p.get_config_from_parameter_value(param_values[p.name()]))
         return init
 
 

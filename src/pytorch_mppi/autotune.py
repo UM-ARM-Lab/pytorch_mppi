@@ -240,7 +240,6 @@ class Autotune:
         self.evaluate_fn = evaluate_fn
 
         self.params = params_to_tune
-        self.param_values = None
         self.optim = optimizer
         self.optim.tuner = self
         self.results = []
@@ -264,21 +263,23 @@ class Autotune:
     def log_current_result(self, res: EvaluationResult):
         with torch.no_grad():
             iteration = len(self.results)
+            kv = self.get_parameter_values(self.params)
             res = res._replace(iteration=iteration,
                                params={k: v.detach().clone() if torch.is_tensor(v) else v for k, v in
-                                       self.param_values.items()})
-            logger.info(f"i:{iteration} cost: {res.costs.mean().item()} params:{self.param_values}")
+                                       kv.items()})
+            logger.info(f"i:{iteration} cost: {res.costs.mean().item()} params:{kv}")
             self.results.append(res)
         return res
 
     def get_parameter_values(self, params_to_tune: typing.Sequence[TunableParameter]):
         # take on the assigned values to the MPPI
-        self.param_values = {p.name(): p.get_current_parameter_value() for p in params_to_tune}
+        return {p.name(): p.get_current_parameter_value() for p in params_to_tune}
 
     def flatten_params(self):
         x = []
+        kv = self.get_parameter_values(self.params)
         # TODO ensure this is the same order as define and unflatten
-        for k, v in self.param_values.items():
+        for k, v in kv.items():
             if torch.is_tensor(v):
                 x.append(v.detach().cpu().numpy())
             else:
@@ -288,20 +289,19 @@ class Autotune:
 
     def unflatten_params(self, x, apply=True):
         # have to be in the same order as the flattening
-        params = {}
+        param_values = {}
         i = 0
         for p in self.params:
             raw_value = x[i:i + p.dim()]
-            params[p.name()] = p.ensure_valid_value(raw_value)
+            param_values[p.name()] = p.ensure_valid_value(raw_value)
             i += p.dim()
         if apply:
-            self.apply_parameters(params)
-        return params
+            self.apply_parameters(param_values)
+        return param_values
 
     def apply_parameters(self, param_values):
         for p in self.params:
             p.apply_parameter_value(param_values[p.name()])
-        self.get_parameter_values(self.params)
 
     def config_to_params(self, config):
         """Configs are param dictionaries where each must be a scalar"""
