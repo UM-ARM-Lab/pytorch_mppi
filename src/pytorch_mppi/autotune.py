@@ -144,7 +144,8 @@ class SigmaParameter(MPPIParameter):
 
     def apply_parameter_value(self, value):
         sigma = self.ensure_valid_value(value)
-        self.mppi.noise_dist = MultivariateNormal(self.mppi.noise_mu, covariance_matrix=torch.diag(sigma))
+        self.mppi.noise_sigma = torch.diag(sigma)
+        self.mppi.noise_dist = MultivariateNormal(self.mppi.noise_mu, covariance_matrix=self.mppi.noise_sigma)
         self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
 
     def get_parameter_value_from_config(self, config):
@@ -297,10 +298,10 @@ class Autotune:
             self.apply_parameters(params)
         return params
 
-    def apply_parameters(self, params):
+    def apply_parameters(self, param_values):
         for p in self.params:
-            p.apply_parameter_value(params[p.name()])
-        self.param_values = params
+            p.apply_parameter_value(param_values[p.name()])
+        self.get_parameter_values(self.params)
 
     def config_to_params(self, config):
         """Configs are param dictionaries where each must be a scalar"""
