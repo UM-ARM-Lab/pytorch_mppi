@@ -1,11 +1,13 @@
 import functools
 import logging
+import pdb
 import time
 
 import numpy as np
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.distributions.uniform import Uniform
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +70,7 @@ def handle_batch_input(n):
                     if len(ret.shape) == n:
                         # print(ret.shape, batch_dims)
                         # ret = torch.tensor(ret[np.newaxis, :, :]).expand(batch_dims[0], *ret.shape)
-                        ret = np.repeat(ret[np.newaxis, :, :], batch_dims[0], axis = 0)
+                        ret = np.repeat(ret[np.newaxis, :, :], batch_dims[0], axis=0)
                         # ret = ret.view(*batch_dims, *ret.shape[-(n - 1):])
                     else:
                         ret = ret.view(*batch_dims)
@@ -98,11 +100,11 @@ class MPPI():
                  u_init=None,
                  U_init=None,
                  u_scale=1,
-                 u_per_command=1,
+                 u_per_command=2,
                  step_dependent_dynamics=False,
                  rollout_samples=1,
                  rollout_var_cost=0,
-                 rollout_var_discount=0.1, #0.95
+                 rollout_var_discount=0.1,  # 0.95
                  sample_null_action=False,
                  noise_abs_cost=False):
         """
@@ -223,12 +225,14 @@ class MPPI():
         self.state = state.to(dtype=self.dtype, device=self.d)
         cost_total = self._compute_total_cost_batch()
         beta = torch.min(cost_total)
+        self.min_cost_raw = beta
         self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
         eta = torch.sum(self.cost_total_non_zero)
         self.omega = (1. / eta) * self.cost_total_non_zero
         for t in range(self.T):
             self.U[t] += torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0)
-        action = self.U[:self.u_per_command]
+        # action = self.U[:self.u_per_command]
+        action = self.U[:2]
         # reduce dimensionality if we only need the first command
         if self.u_per_command == 1:
             action = action[0]
@@ -280,9 +284,31 @@ class MPPI():
         if self.terminal_state_cost:
             c = self.terminal_state_cost(states, actions)
             cost_samples += c
-        cost_total += cost_samples.squeeze() #.mean(dim=0)
+        cost_total += cost_samples.squeeze()  # .mean(dim=0)
         cost_total += cost_var * self.rollout_var_cost
         return cost_total, states, actions
+
+    def compliant_tool_bounds(self, state, actions):
+        table_z = 0.6 + 0.0045
+        tool_height = 0.24
+
+        K, T, nu = actions.shape
+        states_start = state.unsqueeze(0).repeat(K, T, 1)
+        states = states_start.clone()
+        states += actions
+
+        # Apply bounds.
+        states[:, :, 2] = torch.max(torch.tensor(table_z + tool_height - 0.003).to(self.d),
+                                    torch.min(torch.tensor(table_z + tool_height - 0.001).to(self.d),
+                                              states[:, :, 2]))
+        states[:, :, 3] = torch.tensor(np.pi)
+        states[:, :, 4] = torch.tensor(0.0)
+        states[:, :, 5] = torch.max(torch.tensor(-np.pi / 4.).to(self.d),
+                                    torch.min(torch.tensor(np.pi / 4.).to(self.d),
+                                              states[:, :, 5]))
+
+        # Bounded actions are the difference.
+        return states - states_start
 
     def _compute_total_cost_batch(self):
         # parallelize sampling across trajectories
@@ -294,6 +320,7 @@ class MPPI():
             self.perturbed_action[self.K - 1] = 0
         # naively bound control
         self.perturbed_action = self._bound_action(self.perturbed_action)
+        self.perturbed_action = self.compliant_tool_bounds(self.state, self.perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.noise = self.perturbed_action - self.U
         if self.noise_abs_cost:
