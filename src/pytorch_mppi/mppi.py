@@ -203,6 +203,14 @@ class MPPI():
     def _running_cost(self, state, u, t):
         return self.running_cost(state, u, t) if self.step_dependency else self.running_cost(state, u)
 
+    def shift_nominal_trajectory(self):
+        """
+        Shift the nominal trajectory forward one step
+        """
+        # shift command 1 time step
+        self.U = torch.roll(self.U, -1, dims=0)
+        self.U[-1] = self.u_init
+
     def command(self, state, shift_nominal_trajectory=True):
         """
         :param state: (nx) or (K x nx) current state, or samples of states (for propagating a distribution of states)
@@ -211,9 +219,7 @@ class MPPI():
         :returns action: (nu) best action
         """
         if shift_nominal_trajectory:
-            # shift command 1 time step
-            self.U = torch.roll(self.U, -1, dims=0)
-            self.U[-1] = self.u_init
+            self.shift_nominal_trajectory()
 
         return self._command(state)
 
@@ -360,11 +366,12 @@ def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000, rend
     dataset = torch.zeros((retrain_after_iter, mppi.nx + mppi.nu), dtype=mppi.U.dtype, device=mppi.d)
     total_reward = 0
     for i in range(iter):
-        state = env.state.copy()
+        state = env.unwrapped.state.copy()
         command_start = time.perf_counter()
         action = mppi.command(state)
         elapsed = time.perf_counter() - command_start
-        s, r, _, _ = env.step(action.cpu().numpy())
+        res = env.step(action.cpu().numpy())
+        s, r = res[0], res[1]
         total_reward += r
         logger.debug("action taken: %.4f cost received: %.4f time taken: %.5fs", action, -r, elapsed)
         if render:

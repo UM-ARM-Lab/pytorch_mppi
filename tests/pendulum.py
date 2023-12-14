@@ -4,7 +4,7 @@ import torch
 import logging
 import math
 from pytorch_mppi import mppi
-from gym import wrappers, logger as gym_log
+from gym import logger as gym_log
 
 gym_log.set_level(gym_log.INFO)
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.DEBUG,
                     datefmt='%m-%d %H:%M:%S')
 
 if __name__ == "__main__":
-    ENV_NAME = "Pendulum-v0"
+    ENV_NAME = "Pendulum-v1"
     TIMESTEPS = 15  # T
     N_SAMPLES = 100  # K
     ACTION_LOW = -2.0
@@ -40,9 +40,9 @@ if __name__ == "__main__":
         u = perturbed_action
         u = torch.clamp(u, -2, 2)
 
-        newthdot = thdot + (-3 * g / (2 * l) * np.sin(th + np.pi) + 3. / (m * l ** 2) * u) * dt
+        newthdot = thdot + (3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * u) * dt
+        newthdot = np.clip(newthdot, -8, 8)
         newth = th + newthdot * dt
-        newthdot = torch.clamp(newthdot, -8, 8)
 
         state = torch.cat((newth, newthdot), dim=1)
         return state
@@ -65,18 +65,15 @@ if __name__ == "__main__":
 
 
     downward_start = True
-    env = gym.make(ENV_NAME).env  # bypass the default TimeLimit wrapper
-    env.reset()
-    if downward_start:
-        env.state = [np.pi, 1]
+    env = gym.make(ENV_NAME, render_mode="human")
 
-    env = wrappers.Monitor(env, '/tmp/mppi/', force=True)
     env.reset()
     if downward_start:
-        env.env.state = [np.pi, 1]
+        env.state = env.unwrapped.state = [np.pi, 1]
 
     nx = 2
     mppi_gym = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
-                         lambda_=lambda_)
+                         lambda_=lambda_, u_min=torch.tensor(ACTION_LOW, device=d),
+                         u_max=torch.tensor(ACTION_HIGH, device=d), device=d)
     total_reward = mppi.run_mppi(mppi_gym, env, train)
     logger.info("Total reward %f", total_reward)

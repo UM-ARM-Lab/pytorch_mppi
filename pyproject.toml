@@ -1,6 +1,6 @@
 [project]
 name = "pytorch_mppi"
-version = "0.7.2"
+version = "0.7.3"
 description = "Model Predictive Path Integral (MPPI) implemented in pytorch"
 readme = "README.md" # Optional
 
@@ -73,7 +73,7 @@ tune = [
 ]
 test = [
     "pytest",
-    'gym<=0.20',
+    'gym',
     'pygame',
     'pyglet==1.5.27',
     'window-recorder',

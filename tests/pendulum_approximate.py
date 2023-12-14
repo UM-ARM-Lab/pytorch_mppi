@@ -4,7 +4,7 @@ import torch
 import logging
 import math
 from pytorch_mppi import mppi
-from gym import wrappers, logger as gym_log
+from gym import logger as gym_log
 
 gym_log.set_level(gym_log.INFO)
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO,
                     datefmt='%m-%d %H:%M:%S')
 
 if __name__ == "__main__":
-    ENV_NAME = "Pendulum-v0"
+    ENV_NAME = "Pendulum-v1"
     TIMESTEPS = 30  # T
     N_SAMPLES = 1000  # K
     ACTION_LOW = -2.0
@@ -168,10 +168,10 @@ if __name__ == "__main__":
 
 
     downward_start = True
-    env = gym.make(ENV_NAME).env  # bypass the default TimeLimit wrapper
+    env = gym.make(ENV_NAME, render_mode="human").env  # bypass the default TimeLimit wrapper
     env.reset()
     if downward_start:
-        env.state = [np.pi, 1]
+        env.state = env.unwrapped.state = [np.pi, 1]
 
     # bootstrap network with random actions
     if BOOT_STRAP_ITER:
@@ -188,10 +188,9 @@ if __name__ == "__main__":
         train(new_data)
         logger.info("bootstrapping finished")
 
-    env = wrappers.Monitor(env, '/tmp/mppi/', force=True)
     env.reset()
     if downward_start:
-        env.env.state = [np.pi, 1]
+        env.state = env.unwrapped.state = [np.pi, 1]
 
     mppi_gym = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
                          lambda_=lambda_, device=d, u_min=torch.tensor(ACTION_LOW, dtype=torch.double, device=d),
