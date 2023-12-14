@@ -108,6 +108,10 @@ class TunableParameter(abc.ABC):
     def apply_parameter_value(self, value):
         """Apply the parameter value to the underlying object"""
 
+    @abc.abstractmethod
+    def attach_to_state(self, state: dict):
+        """Reattach/reinitialize the parameter to a new internal state. This should be similar to a call to __init__"""
+
     def get_parameter_value_from_config(self, config):
         """Get the serialized value of the parameter from a config dictionary, where each name is a scalar"""
         return config[self.name()]
@@ -118,10 +122,19 @@ class TunableParameter(abc.ABC):
 
 
 class MPPIParameter(TunableParameter, abc.ABC):
-    def __init__(self, mppi: MPPI):
+    def __init__(self, mppi: MPPI, dim=None):
         self.mppi = mppi
-        self.d = mppi.d
-        self.dtype = mppi.dtype
+        self._dim = dim
+        if self.mppi is not None:
+            self.d = self.mppi.d
+            self.dtype = self.mppi.dtype
+            if dim is None:
+                self._dim = self.mppi.nu
+
+    def attach_to_state(self, state: dict):
+        self.mppi = state['mppi']
+        self.d = self.mppi.d
+        self.dtype = self.mppi.dtype
 
 
 class SigmaParameter(MPPIParameter):
@@ -132,10 +145,10 @@ class SigmaParameter(MPPIParameter):
         return 'sigma'
 
     def dim(self):
-        return self.mppi.nu
+        return self._dim
 
     def get_current_parameter_value(self):
-        return torch.cat([self.mppi.noise_sigma[i][i].view(1) for i in range(self.mppi.nu)])
+        return torch.cat([self.mppi.noise_sigma[i][i].view(1) for i in range(self.dim())])
 
     def ensure_valid_value(self, value):
         sigma = ensure_tensor(self.d, self.dtype, value)
@@ -149,10 +162,10 @@ class SigmaParameter(MPPIParameter):
         self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
 
     def get_parameter_value_from_config(self, config):
-        return torch.tensor([config[f'{self.name()}{i}'] for i in range(self.mppi.nu)], dtype=self.dtype, device=self.d)
+        return torch.tensor([config[f'{self.name()}{i}'] for i in range(self.dim())], dtype=self.dtype, device=self.d)
 
     def get_config_from_parameter_value(self, value):
-        return {f'{self.name()}{i}': value[i].item() for i in range(self.mppi.nu)}
+        return {f'{self.name()}{i}': value[i].item() for i in range(self.dim())}
 
 
 class MuParameter(MPPIParameter):
@@ -161,7 +174,7 @@ class MuParameter(MPPIParameter):
         return 'mu'
 
     def dim(self):
-        return self.mppi.nu
+        return self._dim
 
     def get_current_parameter_value(self):
         return self.mppi.noise_mu.clone()
@@ -176,10 +189,10 @@ class MuParameter(MPPIParameter):
         self.mppi.noise_sigma_inv = torch.inverse(self.mppi.noise_sigma.detach())
 
     def get_parameter_value_from_config(self, config):
-        return torch.tensor([config[f'{self.name()}{i}'] for i in range(self.mppi.nu)], dtype=self.dtype, device=self.d)
+        return torch.tensor([config[f'{self.name()}{i}'] for i in range(self.dim())], dtype=self.dtype, device=self.d)
 
     def get_config_from_parameter_value(self, value):
-        return {f'{self.name()}{i}': value[i].item() for i in range(self.mppi.nu)}
+        return {f'{self.name()}{i}': value[i].item() for i in range(self.dim())}
 
 
 class LambdaParameter(MPPIParameter):
@@ -236,15 +249,25 @@ class Autotune:
     eps = 0.0001
 
     def __init__(self, params_to_tune: typing.Sequence[TunableParameter],
-                 evaluate_fn: typing.Callable[[], EvaluationResult], optimizer=CMAESOpt()):
+                 evaluate_fn: typing.Callable[[], EvaluationResult],
+                 reload_state_fn: typing.Callable[[], dict] = None,
+                 optimizer=CMAESOpt()):
+        """
+
+        :param params_to_tune: sequence of tunable parameters
+        :param evaluate_fn: function that returns an EvaluationResult that we want to minimize
+        :param reload_state_fn: function that returns a dictionary of state to reattach to the parameters
+        :param optimizer: optimizer that searches in the parameter space
+        """
         self.evaluate_fn = evaluate_fn
+        self.reload_state_fn = reload_state_fn
 
         self.params = params_to_tune
         self.optim = optimizer
         self.optim.tuner = self
         self.results = []
 
-        self.get_parameter_values(self.params)
+        self.attach_parameters()
         self.optim.setup_optimization()
 
     def optimize_step(self) -> EvaluationResult:
@@ -302,6 +325,17 @@ class Autotune:
     def apply_parameters(self, param_values):
         for p in self.params:
             p.apply_parameter_value(param_values[p.name()])
+
+    def attach_parameters(self):
+        """Attach parameters to any underlying state they require In most cases the parameters are defined already
+        attached to whatever state it needs, e.g. the MPPI controller object for changing the parameter values.
+        However, there are cases where the full state is not serializable, e.g. when using a multiprocessing pool
+        and so we pass only the information required to load the state. We then must load the state and reattach
+        the parameters to the state each training iteration."""
+        if self.reload_state_fn is not None:
+            state = self.reload_state_fn()
+            for p in self.params:
+                p.attach_to_state(state)
 
     def config_to_params(self, config):
         """Configs are param dictionaries where each must be a scalar"""

@@ -1,8 +1,10 @@
 import abc
 import numpy as np
+import torch.cuda
 
 # pip install "ray[tune]" bayesian-optimization hyperopt
 from ray import tune
+from ray import train
 
 from pytorch_mppi import autotune
 from ray.tune.search.hyperopt import HyperOptSearch
@@ -47,26 +49,26 @@ class GlobalTunableParameter(autotune.TunableParameter, abc.ABC):
 
 
 class SigmaGlobalParameter(autotune.SigmaParameter, GlobalTunableParameter):
-    def __init__(self, *args, search_space=tune.loguniform(1e-4, 1e2)):
-        super().__init__(*args)
+    def __init__(self, *args, search_space=tune.loguniform(1e-4, 1e2), **kwargs):
+        super().__init__(*args, **kwargs)
         GlobalTunableParameter.__init__(self, search_space)
 
     def total_search_space(self) -> dict:
-        return {f"{self.name()}{i}": self.search_space for i in range(self.mppi.nu)}
+        return {f"{self.name()}{i}": self.search_space for i in range(self.dim())}
 
 
 class MuGlobalParameter(autotune.MuParameter, GlobalTunableParameter):
-    def __init__(self, *args, search_space=tune.uniform(-1, 1)):
-        super().__init__(*args)
+    def __init__(self, *args, search_space=tune.uniform(-1, 1), **kwargs):
+        super().__init__(*args, **kwargs)
         GlobalTunableParameter.__init__(self, search_space)
 
     def total_search_space(self) -> dict:
-        return {f"{self.name()}{i}": self.search_space for i in range(self.mppi.nu)}
+        return {f"{self.name()}{i}": self.search_space for i in range(self.dim())}
 
 
 class LambdaGlobalParameter(autotune.LambdaParameter, GlobalTunableParameter):
-    def __init__(self, *args, search_space=tune.loguniform(1e-5, 1e3)):
-        super().__init__(*args)
+    def __init__(self, *args, search_space=tune.loguniform(1e-5, 1e3), **kwargs):
+        super().__init__(*args, **kwargs)
         GlobalTunableParameter.__init__(self, search_space)
 
     def total_search_space(self) -> dict:
@@ -74,8 +76,8 @@ class LambdaGlobalParameter(autotune.LambdaParameter, GlobalTunableParameter):
 
 
 class HorizonGlobalParameter(autotune.HorizonParameter, GlobalTunableParameter):
-    def __init__(self, *args, search_space=tune.randint(1, 50)):
-        super().__init__(*args)
+    def __init__(self, *args, search_space=tune.randint(1, 50), **kwargs):
+        super().__init__(*args, **kwargs)
         GlobalTunableParameter.__init__(self, search_space)
 
     def total_search_space(self) -> dict:
@@ -124,8 +126,10 @@ class RayOptimizer(autotune.Optimizer):
         init = self.tuner.initial_value()
 
         hyperopt_search = self.search_alg(points_to_evaluate=[init], metric="cost", mode="min")
+
+        trainable_with_resources = tune.with_resources(self.trainable, {"gpu": 1 if torch.cuda.is_available() else 0})
         self.optim = tune.Tuner(
-            self.trainable,
+            trainable_with_resources,
             tune_config=tune.TuneConfig(
                 num_samples=self.iterations,
                 search_alg=hyperopt_search,
@@ -136,9 +140,10 @@ class RayOptimizer(autotune.Optimizer):
         )
 
     def trainable(self, config):
+        self.tuner.attach_parameters()
         self.tuner.apply_parameters(self.tuner.config_to_params(config))
         res = self.tuner.evaluate_fn()
-        tune.report(cost=res.costs.mean().item())
+        train.report({'cost': res.costs.mean().item()})
 
     def optimize_step(self):
         raise RuntimeError("Ray optimizers only allow tuning of all iterations at once")
