@@ -168,7 +168,7 @@ if __name__ == "__main__":
 
 
     downward_start = True
-    env = gym.make(ENV_NAME, render_mode="human").env  # bypass the default TimeLimit wrapper
+    env = gym.make(ENV_NAME, render_mode="human")  # bypass the default TimeLimit wrapper
     env.reset()
     if downward_start:
         env.state = env.unwrapped.state = [np.pi, 1]

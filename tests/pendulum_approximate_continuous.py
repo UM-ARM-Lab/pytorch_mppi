@@ -176,7 +176,7 @@ if __name__ == "__main__":
 
 
     downward_start = True
-    env = gym.make(ENV_NAME, render_mode="human").env  # bypass the default TimeLimit wrapper
+    env = gym.make(ENV_NAME, render_mode="human")  # bypass the default TimeLimit wrapper
     env.reset()
     if downward_start:
         env.state = env.unwrapped.state = [np.pi, 1]
@@ -200,7 +200,7 @@ if __name__ == "__main__":
     if downward_start:
         env.state = env.unwrapped.state = [np.pi, 1]
 
-    mppi_gym = mppi.MPPI(true_dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
+    mppi_gym = mppi.MPPI(dynamics, running_cost, nx, noise_sigma, num_samples=N_SAMPLES, horizon=TIMESTEPS,
                          lambda_=lambda_, device=d, u_min=torch.tensor(ACTION_LOW, dtype=torch.double, device=d),
                          u_max=torch.tensor(ACTION_HIGH, dtype=torch.double, device=d))
     total_reward, data = mppi.run_mppi(mppi_gym, env, train)
