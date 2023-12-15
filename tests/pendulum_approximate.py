@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     def dynamics(state, perturbed_action):
         u = torch.clamp(perturbed_action, ACTION_LOW, ACTION_HIGH)
-        if state.dim() is 1 or u.dim() is 1:
+        if state.dim() == 1 or u.dim() == 1:
             state = state.view(1, -1)
             u = u.view(1, -1)
         if u.shape[1] > 1:
