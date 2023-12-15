@@ -1,79 +1,15 @@
-import functools
 import logging
 import time
 
-import numpy as np
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
+from arm_pytorch_utilities import handle_batch_input
 
 logger = logging.getLogger(__name__)
 
 
 def _ensure_non_zero(cost, beta, factor):
     return torch.exp(-factor * (cost - beta))
-
-
-def is_tensor_like(x):
-    return torch.is_tensor(x) or type(x) is np.ndarray
-
-
-def squeeze_n(v, n_squeeze):
-    for _ in range(n_squeeze):
-        v = v.squeeze(0)
-    return v
-
-
-# from arm_pytorch_utilities, standalone since that package is not on pypi yet
-def handle_batch_input(n):
-    def _handle_batch_input(func):
-        """For func that expect 2D input, handle input that have more than 2 dimensions by flattening them temporarily"""
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            # assume inputs that are tensor-like have compatible shapes and is represented by the first argument
-            batch_dims = []
-            for arg in args:
-                if is_tensor_like(arg):
-                    if len(arg.shape) > n:
-                        # last dimension is type dependent; all previous ones are batches
-                        batch_dims = arg.shape[:-(n - 1)]
-                        break
-                    elif len(arg.shape) < n:
-                        n_batch_dims_to_add = n - len(arg.shape)
-                        batch_ones_to_add = [1] * n_batch_dims_to_add
-                        args = [v.view(*batch_ones_to_add, *v.shape) if is_tensor_like(v) else v for v in args]
-                        ret = func(*args, **kwargs)
-                        if isinstance(ret, tuple):
-                            ret = [squeeze_n(v, n_batch_dims_to_add) if is_tensor_like(v) else v for v in ret]
-                            return ret
-                        else:
-                            if is_tensor_like(ret):
-                                return squeeze_n(ret, n_batch_dims_to_add)
-                            else:
-                                return ret
-            # no batches; just return normally
-            if not batch_dims:
-                return func(*args, **kwargs)
-
-            # reduce all batch dimensions down to the first one
-            args = [v.view(-1, *v.shape[-(n - 1):]) if (is_tensor_like(v) and len(v.shape) > 2) else v for v in args]
-            ret = func(*args, **kwargs)
-            # restore original batch dimensions; keep variable dimension (nx)
-            if type(ret) is tuple:
-                ret = [v if (not is_tensor_like(v) or len(v.shape) == 0) else (
-                    v.view(*batch_dims, *v.shape[-(n - 1):]) if len(v.shape) == n else v.view(*batch_dims)) for v in
-                       ret]
-            else:
-                if is_tensor_like(ret):
-                    if len(ret.shape) == n:
-                        ret = ret.view(*batch_dims, *ret.shape[-(n - 1):])
-                    else:
-                        ret = ret.view(*batch_dims)
-            return ret
-
-        return wrapper
-
-    return _handle_batch_input
 
 
 class MPPI():
