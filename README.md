@@ -253,10 +253,6 @@ for i in range(iterations):
 ```
 
 # Tests
-You'll need to install `gym<=0.20` to run the tests (for the `Pendulum-v0` environment).
-The easy way to install this and other testing dependencies is running `python setup.py test`.
-Note that `gym` past `0.20` deprecated `Pendulum-v0` for `Pendulum-v1` with incompatible dynamics.
-
 Under `tests` you can find the `MPPI` method applied to known pendulum dynamics
 and approximate pendulum dynamics (with a 2 layer feedforward net 
 estimating the state residual). Using a continuous angle representation
@@ -273,3 +269,4 @@ to initialize the dynamics:
 # Related projects
 - [pytorch CEM](https://github.com/LemonPi/pytorch_cem) - an alternative MPC shooting method with similar API as this
 project
+- [pytorch iCEM](https://github.com/UM-ARM-Lab/pytorch_icem) - alternative sampling based MPC
