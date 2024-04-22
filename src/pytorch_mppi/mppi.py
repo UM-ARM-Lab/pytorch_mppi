@@ -305,6 +305,134 @@ class MPPI():
         return states[:, 1:]
 
 
+class SMPPI(MPPI):
+    """Smooth MPPI by lifting the control space and penalizing the change in action"""
+
+    def __init__(self, *args, w_action_seq_cost=1., delta_t=1., U_init=None, action_min=None, action_max=None,
+                 **kwargs):
+        self.w_action_seq_cost = w_action_seq_cost
+        self.delta_t = delta_t
+
+        super().__init__(*args, U_init=U_init, **kwargs)
+
+        # these are the actual commanded actions, which is now no longer directly sampled
+        self.action_min = action_min
+        self.action_max = action_max
+        if self.action_min is not None and self.action_max is None:
+            if not torch.is_tensor(self.action_min):
+                self.action_min = torch.tensor(self.action_min)
+            self.action_max = -self.action_min
+        if self.action_max is not None and self.action_min is None:
+            if not torch.is_tensor(self.action_max):
+                self.action_max = torch.tensor(self.action_max)
+            self.action_min = -self.action_max
+        if self.action_min is not None:
+            self.action_min = self.action_min.to(device=self.d)
+            self.action_max = self.action_max.to(device=self.d)
+
+        # this smooth formulation works better if control starts from 0
+        if U_init is None:
+            self.action_sequence = torch.zeros_like(self.U)
+        else:
+            self.action_sequence = U_init
+        self.U = torch.zeros_like(self.U)
+
+    def shift_nominal_trajectory(self):
+        self.U = torch.roll(self.U, -1, dims=0)
+        self.U[-1] = self.u_init
+        self.action_sequence = torch.roll(self.action_sequence, -1, dims=0)
+        self.action_sequence[-1] = self.action_sequence[-2]  # add T-1 action to T
+
+    def get_action_sequence(self):
+        return self.action_sequence
+
+    def reset(self):
+        self.U = torch.zeros_like(self.U)
+        self.action_sequence = torch.zeros_like(self.U)
+
+    def change_horizon(self, horizon):
+        if horizon < self.U.shape[0]:
+            # truncate trajectory
+            self.U = self.U[:horizon]
+            self.action_sequence = self.action_sequence[:horizon]
+        elif horizon > self.U.shape[0]:
+            # extend with u_init
+            extend_for = horizon - self.U.shape[0]
+            self.U = torch.cat((self.U, self.u_init.repeat(extend_for, 1)))
+            self.action_sequence = torch.cat((self.action_sequence, self.action_sequence[-1].repeat(extend_for, 1)))
+        self.T = horizon
+
+    def _bound_d_action(self, control):
+        if self.u_max is not None:
+            return torch.max(torch.min(control, self.u_max), self.u_min)  # action
+        return control
+
+    def _bound_action(self, action):
+        if self.action_max is not None:
+            return torch.max(torch.min(action, self.action_max), self.action_min)
+        return action
+
+    def _command(self, state):
+        if not torch.is_tensor(state):
+            state = torch.tensor(state)
+        self.state = state.to(dtype=self.dtype, device=self.d)
+        cost_total = self._compute_total_cost_batch()
+
+        self._compute_weighting(cost_total)
+        perturbations = torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
+
+        self.U = self.U + perturbations
+        # U is now the lifted control space, so we integrate it
+        self.action_sequence += self.U * self.delta_t
+
+        action = self.get_action_sequence()[:self.u_per_command]
+        # reduce dimensionality if we only need the first command
+        if self.u_per_command == 1:
+            action = action[0]
+        return action
+
+    def _compute_total_cost_batch(self):
+        # parallelize sampling across trajectories
+        # resample noise each time we take an action
+        noise = self.noise_dist.rsample((self.K, self.T))
+        # broadcast own control to noise over samples; now it's K x T x nu
+        perturbed_control = self.U + noise
+        # naively bound control
+        self.perturbed_control = self._bound_d_action(perturbed_control)
+        # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
+        self.perturbed_action = self.action_sequence + perturbed_control * self.delta_t
+        if self.sample_null_action:
+            self.perturbed_action[self.K - 1] = 0
+        self.perturbed_action = self._bound_action(self.perturbed_action)
+
+        self.noise = (self.perturbed_action - self.action_sequence) / self.delta_t - self.U
+
+        if self.noise_abs_cost:
+            action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
+            # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
+            # the actions with low noise if all states have the same cost. With abs(noise) we prefer actions close to the
+            # nomial trajectory.
+        else:
+            action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv  # Like original paper
+
+        # action difference as cost
+        # action_diff = self.u_scale * torch.diff(self.perturbed_action, dim=-2)
+        # action_smoothness_cost = torch.sum(torch.square(action_diff), dim=(1, 2))
+        action_diff = self.u_scale * \
+            (self.perturbed_action[:, 1:] - self.perturbed_action[:, :-1])
+        action_smoothness_cost = torch.sum(torch.square(action_diff), dim=(1, 2))
+        # handle non-homogeneous action sequence cost
+        action_smoothness_cost *= self.w_action_seq_cost
+
+        rollout_cost, self.states, actions = self._compute_rollout_costs(self.perturbed_action)
+        self.actions = actions / self.u_scale
+
+        # action perturbation cost
+        perturbation_cost = torch.sum(self.U * action_cost, dim=(1, 2))
+        self.cost_total = rollout_cost + perturbation_cost + action_smoothness_cost
+        return self.cost_total
+
+
 def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000, render=True):
     dataset = torch.zeros((retrain_after_iter, mppi.nx + mppi.nu), dtype=mppi.U.dtype, device=mppi.d)
     total_reward = 0
