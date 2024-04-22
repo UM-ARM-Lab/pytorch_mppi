@@ -168,10 +168,9 @@ class MPPI():
         self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
         eta = torch.sum(self.cost_total_non_zero)
         self.omega = (1. / eta) * self.cost_total_non_zero
-        perturbations = []
-        for t in range(self.T):
-            perturbations.append(torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0))
-        perturbations = torch.stack(perturbations)
+
+        perturbations = torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
+
         self.U = self.U + perturbations
         action = self.U[:self.u_per_command]
         # reduce dimensionality if we only need the first command
@@ -293,8 +292,11 @@ class MPPI():
         states = torch.zeros((num_rollouts, T + 1, self.nx), dtype=self.U.dtype, device=self.U.device)
         states[:, 0] = state
         for t in range(T):
-            states[:, t + 1] = self._dynamics(states[:, t].view(num_rollouts, -1),
-                                              self.u_scale * self.U[t].tile(num_rollouts, 1), t)
+            next_state = self._dynamics(states[:, t].view(num_rollouts, -1),
+                                        self.u_scale * self.U[t].tile(num_rollouts, 1), t)
+            # dynamics may augment state; here we just take the first nx dimensions
+            states[:, t + 1] = next_state[:, :self.nx]
+
         return states[:, 1:]
 
 
