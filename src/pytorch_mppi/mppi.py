@@ -139,6 +139,9 @@ class MPPI():
     def _running_cost(self, state, u, t):
         return self.running_cost(state, u, t) if self.step_dependency else self.running_cost(state, u)
 
+    def get_action_sequence(self):
+        return self.U
+
     def shift_nominal_trajectory(self):
         """
         Shift the nominal trajectory forward one step
@@ -159,20 +162,24 @@ class MPPI():
 
         return self._command(state)
 
+    def _compute_weighting(self, cost_total):
+        beta = torch.min(cost_total)
+        self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
+        eta = torch.sum(self.cost_total_non_zero)
+        self.omega = (1. / eta) * self.cost_total_non_zero
+        return self.omega
+
     def _command(self, state):
         if not torch.is_tensor(state):
             state = torch.tensor(state)
         self.state = state.to(dtype=self.dtype, device=self.d)
         cost_total = self._compute_total_cost_batch()
-        beta = torch.min(cost_total)
-        self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
-        eta = torch.sum(self.cost_total_non_zero)
-        self.omega = (1. / eta) * self.cost_total_non_zero
 
+        self._compute_weighting(cost_total)
         perturbations = torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
 
         self.U = self.U + perturbations
-        action = self.U[:self.u_per_command]
+        action = self.get_action_sequence()[:self.u_per_command]
         # reduce dimensionality if we only need the first command
         if self.u_per_command == 1:
             action = action[0]
@@ -285,12 +292,13 @@ class MPPI():
         if state.size(0) == 1:
             state = state.repeat(num_rollouts, 1)
 
-        T = self.U.shape[0]
-        states = torch.zeros((num_rollouts, T + 1, self.nx), dtype=self.U.dtype, device=self.U.device)
+        U = self.get_action_sequence()
+        T = U.shape[0]
+        states = torch.zeros((num_rollouts, T + 1, self.nx), dtype=U.dtype, device=U.device)
         states[:, 0] = state
         for t in range(T):
             next_state = self._dynamics(states[:, t].view(num_rollouts, -1),
-                                        self.u_scale * self.U[t].tile(num_rollouts, 1), t)
+                                        self.u_scale * U[t].tile(num_rollouts, 1), t)
             # dynamics may augment state; here we just take the first nx dimensions
             states[:, t + 1] = next_state[:, :self.nx]
 
