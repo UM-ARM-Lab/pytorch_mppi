@@ -416,10 +416,7 @@ class SMPPI(MPPI):
             action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv  # Like original paper
 
         # action difference as cost
-        # action_diff = self.u_scale * torch.diff(self.perturbed_action, dim=-2)
-        # action_smoothness_cost = torch.sum(torch.square(action_diff), dim=(1, 2))
-        action_diff = self.u_scale * \
-            (self.perturbed_action[:, 1:] - self.perturbed_action[:, :-1])
+        action_diff = self.u_scale * torch.diff(self.perturbed_action, dim=-2)
         action_smoothness_cost = torch.sum(torch.square(action_diff), dim=(1, 2))
         # handle non-homogeneous action sequence cost
         action_smoothness_cost *= self.w_action_seq_cost
