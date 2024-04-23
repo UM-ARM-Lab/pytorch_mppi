@@ -1,1 +1,1 @@
-from pytorch_mppi.mppi import MPPI, SMPPI
+from pytorch_mppi.mppi import MPPI, SMPPI, KMPPI

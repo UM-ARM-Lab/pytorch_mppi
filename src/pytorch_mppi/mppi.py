@@ -4,6 +4,7 @@ import time
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
 from arm_pytorch_utilities import handle_batch_input
+from functorch import vmap
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ class MPPI():
         cost_total = cost_total + cost_var * self.rollout_var_cost
         return cost_total, states, actions
 
-    def _compute_total_cost_batch(self):
+    def _compute_perturbed_action_and_noise(self):
         # parallelize sampling across trajectories
         # resample noise each time we take an action
         noise = self.noise_dist.rsample((self.K, self.T))
@@ -256,6 +257,9 @@ class MPPI():
         self.perturbed_action = self._bound_action(perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.noise = self.perturbed_action - self.U
+
+    def _compute_total_cost_batch(self):
+        self._compute_perturbed_action_and_noise()
         if self.noise_abs_cost:
             action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
             # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
@@ -391,7 +395,7 @@ class SMPPI(MPPI):
             action = action[0]
         return action
 
-    def _compute_total_cost_batch(self):
+    def _compute_perturbed_action_and_noise(self):
         # parallelize sampling across trajectories
         # resample noise each time we take an action
         noise = self.noise_dist.rsample((self.K, self.T))
@@ -407,6 +411,8 @@ class SMPPI(MPPI):
 
         self.noise = (self.perturbed_action - self.action_sequence) / self.delta_t - self.U
 
+    def _compute_total_cost_batch(self):
+        self._compute_perturbed_action_and_noise()
         if self.noise_abs_cost:
             action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
             # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
@@ -428,6 +434,95 @@ class SMPPI(MPPI):
         perturbation_cost = torch.sum(self.U * action_cost, dim=(1, 2))
         self.cost_total = rollout_cost + perturbation_cost + action_smoothness_cost
         return self.cost_total
+
+
+def rbf4theta(t, tk, sigma=1):  # higher for more smooth decay from 1
+    d = torch.sum((t[:, None] - tk) ** 2, dim=-1)
+    k = torch.exp(-d / (1e-8 + 2 * sigma ** 2))
+    return k
+
+
+class KMPPI(MPPI):
+    """MPPI with kernel interpolation of control points for smoothing"""
+    def __init__(self, *args, num_support_pts=None, interpolation_kernel=rbf4theta, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.num_support_pts = num_support_pts or self.T // 2
+        # control points to be sampled
+        self.theta = torch.zeros((self.num_support_pts, self.nu), dtype=self.dtype, device=self.d)
+        self.Tk = None
+        self.Hs = None
+        # interpolation kernel
+        self.interpolation_kernel = interpolation_kernel
+        self.intp_krnl = None
+        self.prepare_vmap_interpolation()
+
+    def reset(self):
+        super().reset()
+        self.theta.zero_()
+
+    def shift_nominal_trajectory(self):
+        super().shift_nominal_trajectory()
+        self.theta, _ = self.do_kernel_interpolation(self.Tk[0] + 1, self.Tk[0], self.theta)
+
+    def do_kernel_interpolation(self, t, tk, c):
+        K = self.interpolation_kernel(t.unsqueeze(-1), tk.unsqueeze(-1))
+        Ktktk = self.interpolation_kernel(tk.unsqueeze(-1), tk.unsqueeze(-1))
+        # print(K.shape, Ktktk.shape)
+        # row normalize K
+        # K = K / K.sum(dim=1).unsqueeze(1)
+
+        # KK = K @ torch.inverse(Ktktk)
+        KK = torch.linalg.solve(Ktktk, K, left=False)
+
+        return torch.matmul(KK, c), K
+
+    def prepare_vmap_interpolation(self):
+        self.Tk = torch.linspace(0, self.T - 1, int(self.num_support_pts), device=self.d, dtype=self.dtype).unsqueeze(
+            0).repeat(self.K, 1)
+        self.Hs = torch.linspace(0, self.T - 1, int(self.T), device=self.d, dtype=self.dtype).unsqueeze(0).repeat(
+            self.K, 1)
+        self.intp_krnl = vmap(self.do_kernel_interpolation)
+
+    def deparameterize_to_trajectory_single(self, theta):
+        return self.do_kernel_interpolation(self.Hs[0], self.Tk[0], theta)
+
+    def deparameterize_to_trajectory_batch(self, theta):
+        assert theta.shape == (self.K, self.num_support_pts, self.nu)
+        return self.intp_krnl(self.Hs, self.Tk, theta)
+
+    def _compute_perturbed_action_and_noise(self):
+        # parallelize sampling across trajectories
+        # resample noise each time we take an action
+        noise = self.noise_dist.rsample((self.K, self.num_support_pts))
+        perturbed_control_pts = self.theta + noise
+        # control points in the same space as control and should be bounded
+        perturbed_control_pts = self._bound_action(perturbed_control_pts)
+        self.noise_theta = perturbed_control_pts - self.theta
+        perturbed_action, _ = self.deparameterize_to_trajectory_batch(perturbed_control_pts)
+        if self.sample_null_action:
+            perturbed_action[self.K - 1] = 0
+        # naively bound control
+        self.perturbed_action = self._bound_action(perturbed_action)
+        # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
+        self.noise = self.perturbed_action - self.U
+
+    def _command(self, state):
+        if not torch.is_tensor(state):
+            state = torch.tensor(state)
+        self.state = state.to(dtype=self.dtype, device=self.d)
+        cost_total = self._compute_total_cost_batch()
+
+        self._compute_weighting(cost_total)
+        perturbations = torch.sum(self.omega.view(-1, 1, 1) * self.noise_theta, dim=0)
+
+        self.theta = self.theta + perturbations
+        self.U, _ = self.deparameterize_to_trajectory_single(self.theta)
+
+        action = self.get_action_sequence()[:self.u_per_command]
+        # reduce dimensionality if we only need the first command
+        if self.u_per_command == 1:
+            action = action[0]
+        return action
 
 
 def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000, render=True):

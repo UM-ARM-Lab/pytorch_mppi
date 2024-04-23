@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 
 from pytorch_mppi import autotune
 
-from pytorch_mppi import MPPI, SMPPI
+from pytorch_mppi import MPPI, SMPPI, KMPPI
 from pytorch_seed import seed
 import logging
 
@@ -268,21 +268,29 @@ def main():
 
     # create MPPI with some initial parameters
     # mppi = MPPI(env.dynamics, env.running_cost, 2,
-    #             noise_sigma=torch.diag(torch.tensor([5., 5.], dtype=dtype, device=device)),
+    #             noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
     #             num_samples=500,
     #             horizon=20, device=device,
     #             terminal_state_cost=env.terminal_cost,
     #             u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
     #             lambda_=1)
-    mppi = SMPPI(env.dynamics, env.running_cost, 2,
+    # mppi = SMPPI(env.dynamics, env.running_cost, 2,
+    #              noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+    #              w_action_seq_cost=0,
+    #              num_samples=500,
+    #              horizon=20, device=device,
+    #              terminal_state_cost=env.terminal_cost,
+    #              u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+    #              action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+    #              lambda_=10)
+    mppi = KMPPI(env.dynamics, env.running_cost, 2,
                  noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-                 w_action_seq_cost=0,
                  num_samples=500,
                  horizon=20, device=device,
+                 num_support_pts=5,
                  terminal_state_cost=env.terminal_cost,
-                 u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                 action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                 lambda_=10)
+                 u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
+                 lambda_=1)
 
     # use the same nominal trajectory to start with for all the evaluations for fairness
     # parameters for our sample evaluation function - lots of choices for the evaluation function
