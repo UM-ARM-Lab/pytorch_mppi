@@ -132,6 +132,10 @@ class MPPI():
         self.states = None
         self.actions = None
 
+    def get_params(self):
+        return f"K={self.K} T={self.T} M={self.M} lambda={self.lambda_} noise_mu={self.noise_mu.cpu().numpy()} noise_sigma={self.noise_sigma.cpu().numpy()}".replace(
+            "\n", ",")
+
     @handle_batch_input(n=2)
     def _dynamics(self, state, u, t):
         return self.F(state, u, t) if self.step_dependency else self.F(state, u)
@@ -341,6 +345,9 @@ class SMPPI(MPPI):
             self.action_sequence = U_init
         self.U = torch.zeros_like(self.U)
 
+    def get_params(self):
+        return f"{super().get_params()} w={self.w_action_seq_cost} t={self.delta_t}"
+
     def shift_nominal_trajectory(self):
         self.U = torch.roll(self.U, -1, dims=0)
         self.U[-1] = self.u_init
@@ -444,6 +451,7 @@ def rbf4theta(t, tk, sigma=1):  # higher for more smooth decay from 1
 
 class KMPPI(MPPI):
     """MPPI with kernel interpolation of control points for smoothing"""
+
     def __init__(self, *args, num_support_pts=None, interpolation_kernel=rbf4theta, **kwargs):
         super().__init__(*args, **kwargs)
         self.num_support_pts = num_support_pts or self.T // 2
@@ -455,6 +463,9 @@ class KMPPI(MPPI):
         self.interpolation_kernel = interpolation_kernel
         self.intp_krnl = None
         self.prepare_vmap_interpolation()
+
+    def get_params(self):
+        return f"{super().get_params()} num_support_pts={self.num_support_pts} kernel={self.interpolation_kernel.__name__}"
 
     def reset(self):
         super().reset()

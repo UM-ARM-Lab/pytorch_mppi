@@ -2,7 +2,7 @@ import copy
 
 import torch
 
-from arm_pytorch_utilities import linalg, handle_batch_input, sort_nicely
+from arm_pytorch_utilities import linalg, handle_batch_input, sort_nicely, cache
 import matplotlib.colors
 from matplotlib import pyplot as plt
 import os
@@ -249,7 +249,7 @@ def make_gif(imgs_dir, gif_name):
     imageio.mimsave(gif_name, images, duration=0.1)
 
 
-def do_control(env, mppi, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False):
+def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False):
     evaluate_running_cost = True
     if save_img:
         os.makedirs("images", exist_ok=True)
@@ -311,7 +311,19 @@ def do_control(env, mppi, seeds=(0,), run_steps=20, num_refinement_steps=1, save
         print(f"total accumulated rollout cost: {sum(rollout_costs)}")
         env.reset()
         mppi.reset()
-        make_gif("images/runs", f"images/gif/{mppi.__class__.__name__}_{seed}.gif")
+
+        key = f"{mppi.__class__.__name__}"
+        secondary_key = (seed, mppi.get_params())
+        make_gif("images/runs", f"images/gif/{key}_{seed}.gif")
+        if key not in ch:
+            ch[key] = {}
+        ch[key][secondary_key] = {
+            "actual_costs": actual_costs,
+            "rollout_costs": rollout_costs,
+            "controls": controls,
+            "control_diff": control_diff,
+        }
+        ch.save()
 
         if plot_single:
             # plot the costs with the step
@@ -337,10 +349,106 @@ def do_control(env, mppi, seeds=(0,), run_steps=20, num_refinement_steps=1, save
             input("Press Enter to close the window and exit...")
 
 
+def plot_result(ch):
+    num_steps = 20
+
+    def simplify_name(name):
+        # remove shared parameters
+        return name.replace("K=500 T=20 M=1 ", "").replace("noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]]",
+                                                           "").replace("_lambda=1", "")
+
+    methods = {}
+    for key, values in ch.items():
+        for secondary_key, data in values.items():
+            actual_costs = torch.tensor(data["actual_costs"])
+            rollout_costs = torch.tensor(data["rollout_costs"])
+            controls = data["controls"]
+            control_diff = data["control_diff"]
+
+            method_name = f"{key}_{secondary_key[1]}"
+            if method_name not in methods:
+                methods[method_name] = {
+                    "actual_costs": [actual_costs],
+                    "rollout_costs": [rollout_costs],
+                    "controls": [controls],
+                    "control_diff": [control_diff],
+                }
+            else:
+                m = methods[method_name]
+                m["actual_costs"].append(actual_costs)
+                m["rollout_costs"].append(rollout_costs)
+                m["controls"].append(controls)
+                m["control_diff"].append(control_diff)
+
+    method_names = "\n".join(methods.keys())
+    print(f"all method keys\n{method_names}")
+
+    allowed_names = [
+        "MPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]]",
+        "SMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] w=5 t=1.0",
+        "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=rbf4theta"
+    ]
+
+    fig, ax = plt.subplots(nrows=2, sharex=True, figsize=(8, 14))
+    ax[0].set_xlim(0, num_steps - 1)
+    # only set the min of y to be 0
+    ax[0].set_title(f"trajectory cost")
+    ax[1].set_title(f"rollout cost")
+    ax[1].set_yscale('log')
+    ax[1].set_xticks(range(num_steps))
+    ax[1].set_xlabel("step")
+    f, a = plt.subplots()
+    a.set_title(f"control inputs total diff")
+    # tick on x for every step discretely
+    for method in allowed_names:
+        data = methods[method]
+        method = simplify_name(method)
+        actual_costs = torch.stack(data["actual_costs"])
+        rollout_costs = torch.stack(data["rollout_costs"])
+        controls = data["controls"]
+        control_diff = data["control_diff"]
+        for i, v in enumerate([actual_costs, rollout_costs]):
+            # plot the median along dim 0 and the 25th and 75th percentile
+            lower = torch.quantile(v, .25, dim=0)
+            upper = torch.quantile(v, .75, dim=0)
+            ax[i].fill_between(range(num_steps), lower, upper, alpha=0.2)
+            ax[i].plot(v.median(dim=0)[0], label=method)
+
+        # compute total control diff
+        control_diff = torch.stack(control_diff)
+        total_diff = control_diff.abs().sum(dim=(1, 2))
+        c1 = actual_costs.sum(dim=1)
+        c2 = rollout_costs.sum(dim=1)
+        print(
+            f"method {method}\ntrajectory cost {c1.mean():.1f} ({c1.std():.1f})\nrollout cost {c2.mean():.1f} ({c2.std():.1f})\ncontrol diff {total_diff.mean():.1f} ({total_diff.std():.1f})")
+        # plot frequency of total control diff
+        # kernel density estimate
+        from scipy.stats import gaussian_kde
+        density = gaussian_kde(total_diff)
+        density.covariance_factor = lambda: .25
+        density._compute_covariance()
+        xs = torch.linspace(0, total_diff.max() * 1.2, 50)
+        a.plot(xs, density(xs), label=method)
+        # plot histogram of total control diff
+
+    ax[0].set_ylim(0, None)
+    ax[1].legend()
+    a.set_ylim(0, None)
+    a.set_xlim(0, None)
+    a.legend()
+    plt.show()
+    plt.tight_layout()
+    input("Press Enter to close the window and exit...")
+
+
 def main():
     device = "cpu"
     dtype = torch.double
     pytorch_seed.seed(0)
+    ch = cache.LocalCache("mppi_res.pkl")
+
+    plot_result(ch)
+    exit(0)
 
     # create toy environment to do on control on (default start and goal)
     env = Toy2DEnvironment(visualize=True, terminal_scale=10, device=device)
@@ -350,26 +458,28 @@ def main():
                 num_samples=500,
                 horizon=20, device=device,
                 terminal_state_cost=env.terminal_cost,
-                u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
-                lambda_=10)
-    # mppi = SMPPI(env.dynamics, env.running_cost, 2,
-    #              noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-    #              w_action_seq_cost=0,
-    #              num_samples=500,
-    #              horizon=20, device=device,
-    #              terminal_state_cost=env.terminal_cost,
-    #              u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-    #              action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-    #              lambda_=10)
-    # mppi = KMPPI(env.dynamics, env.running_cost, 2,
-    #              noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-    #              num_samples=500,
-    #              horizon=20, device=device,
-    #              num_support_pts=5,
-    #              terminal_state_cost=env.terminal_cost,
-    #              u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
-    #              lambda_=1)
-    do_control(env, mppi, seeds=(0,1), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False)
+                u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                lambda_=1)
+    smppi = SMPPI(env.dynamics, env.running_cost, 2,
+                  noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                  w_action_seq_cost=5,
+                  num_samples=500,
+                  horizon=20, device=device,
+                  terminal_state_cost=env.terminal_cost,
+                  u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                  action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                  lambda_=1)
+    kmppi = KMPPI(env.dynamics, env.running_cost, 2,
+                  noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                  num_samples=500,
+                  horizon=20, device=device,
+                  num_support_pts=5,
+                  terminal_state_cost=env.terminal_cost,
+                  u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                  lambda_=1)
+    for ctrl in [mppi, smppi, kmppi]:
+        do_control(env, ctrl, ch, seeds=range(10), run_steps=20, num_refinement_steps=1, save_img=True,
+                   plot_single=False)
 
 
 if __name__ == "__main__":
