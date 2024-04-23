@@ -275,20 +275,20 @@ def main():
     #             u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
     #             lambda_=1)
     mppi = SMPPI(env.dynamics, env.running_cost, 2,
-                 noise_sigma=torch.diag(torch.tensor([5., 5.], dtype=dtype, device=device)),
+                 noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
                  w_action_seq_cost=0,
                  num_samples=500,
                  horizon=20, device=device,
                  terminal_state_cost=env.terminal_cost,
-                 u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
-                 action_max=torch.tensor([2., 2.], dtype=dtype, device=device),
-                 lambda_=1)
+                 u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                 action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                 lambda_=10)
 
     # use the same nominal trajectory to start with for all the evaluations for fairness
     # parameters for our sample evaluation function - lots of choices for the evaluation function
     evaluate_running_cost = True
     run_steps = 20
-    num_refinement_steps = 5
+    num_refinement_steps = 1
 
     rollout_costs = []
     actual_costs = []
