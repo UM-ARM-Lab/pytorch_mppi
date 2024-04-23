@@ -1,17 +1,14 @@
 import copy
 
 import torch
-import typing
 
-import window_recorder
-from arm_pytorch_utilities import linalg, handle_batch_input
+from arm_pytorch_utilities import linalg, handle_batch_input, sort_nicely
 import matplotlib.colors
 from matplotlib import pyplot as plt
-
-from pytorch_mppi import autotune
+import os
 
 from pytorch_mppi import MPPI, SMPPI, KMPPI
-from pytorch_seed import seed
+import pytorch_seed
 import logging
 
 # import window_recorder
@@ -115,6 +112,13 @@ class Toy2DEnvironment:
 
         self.start_visualization()
 
+    def reset(self):
+        self.state = self.start
+        self.clear_artist(self.rollout_artist)
+        self.rollout_artist = None
+        self.clear_trajectory()
+        self.trajectory_artist = None
+
     def step(self, action):
         self.state = self.dynamics(self.state, action)
         return self.state
@@ -151,31 +155,6 @@ class Toy2DEnvironment:
             self.draw_costs()
             # self.draw_start()
             self.draw_goal()
-
-    def draw_results(self, params, all_results: typing.Sequence[autotune.EvaluationResult]):
-        iterations = [res.iteration for res in all_results]
-        loss = [res.costs.mean().item() for res in all_results]
-
-        # loss curve
-        fig, ax = plt.subplots()
-        ax.plot(iterations, loss)
-        ax.set_xlabel('iteration')
-        ax.set_ylabel('cost')
-        plt.pause(0.001)
-        plt.savefig('cost.png')
-
-        if 'sigma' in params:
-            sigma = [res.params['sigma'] for res in all_results]
-            sigma = torch.stack(sigma)
-            fig, ax = plt.subplots(nrows=2, sharex=True)
-            ax[0].plot(iterations, sigma[:, 0])
-            ax[1].plot(iterations, sigma[:, 1])
-            ax[1].set_xlabel('iteration')
-            ax[0].set_ylabel('sigma[0]')
-            ax[1].set_ylabel('sigma[1]')
-            plt.draw()
-            plt.pause(0.005)
-            plt.savefig('sigma.png')
 
     def draw_rollouts(self, rollouts):
         if not self.visualize:
@@ -258,22 +237,121 @@ class Toy2DEnvironment:
         return artists
 
 
+def make_gif(imgs_dir, gif_name):
+    import imageio
+    images = []
+    # human sort
+    names = os.listdir(imgs_dir)
+    sort_nicely(names)
+    for filename in names:
+        if filename.endswith(".png"):
+            images.append(imageio.v2.imread(os.path.join(imgs_dir, filename)))
+    imageio.mimsave(gif_name, images, duration=0.1)
+
+
+def do_control(env, mppi, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False):
+    evaluate_running_cost = True
+    if save_img:
+        os.makedirs("images", exist_ok=True)
+        os.makedirs("images/runs", exist_ok=True)
+        os.makedirs("images/gif", exist_ok=True)
+
+    for seed in seeds:
+        pytorch_seed.seed(seed)
+
+        # use the same nominal trajectory to start with for all the evaluations for fairness
+        # parameters for our sample evaluation function - lots of choices for the evaluation function
+        rollout_costs = []
+        actual_costs = []
+        controls = []
+        state = env.state
+        # we sample multiple trajectories for the same start to goal problem, but in your case you should consider
+        # evaluating over a diverse dataset of trajectories
+        for i in range(run_steps):
+            # mppi.U = nominal_trajectory.clone()
+            # the nominal trajectory at the start will be different if the horizon's changed
+            # mppi.change_horizon(mppi.T)
+            # usually MPPI will have its nominal trajectory warm-started from the previous iteration
+            # for a fair test of tuning we will reset its nominal trajectory to the same random one each time
+            # we manually warm it by refining it for some steps
+            u = None
+            for k in range(num_refinement_steps):
+                last_refinement = k == num_refinement_steps - 1
+                u = mppi.command(state, shift_nominal_trajectory=last_refinement)
+
+            rollout = mppi.get_rollouts(state)
+
+            rollout_cost = 0
+            this_cost = env.running_cost(state)
+            rollout = rollout[0]
+            # here we evaluate on the rollout MPPI cost of the resulting trajectories
+            # alternative costs for tuning the parameters are possible, such as just considering terminal cost
+            if evaluate_running_cost:
+                for t in range(len(rollout) - 1):
+                    rollout_cost = rollout_cost + env.running_cost(rollout[t], mppi.U[t])
+            rollout_cost = rollout_cost + env.terminal_cost(rollout, mppi.U)
+            env.draw_rollouts([rollout])
+
+            prev_state = copy.deepcopy(state)
+            state = env.step(u)
+            env.draw_trajectory_step(prev_state, state)
+
+            if save_img:
+                plt.savefig(f"images/runs/{i}.png")
+
+            print(f"step {i} state {state} current cost {this_cost} rollout cost {rollout_cost}")
+            actual_costs.append(this_cost.cpu())
+            rollout_costs.append(rollout_cost.cpu())
+            controls.append(u.cpu())
+
+        controls = torch.stack(controls)
+        # consider total difference
+        control_diff = torch.diff(controls, dim=0)
+        print(f"total accumulated cost: {sum(actual_costs)}")
+        print(f"total accumulated rollout cost: {sum(rollout_costs)}")
+        env.reset()
+        mppi.reset()
+        make_gif("images/runs", f"images/gif/{mppi.__class__.__name__}_{seed}.gif")
+
+        if plot_single:
+            # plot the costs with the step
+            fig, ax = plt.subplots(nrows=3, sharex=True, figsize=(8, 14))
+            # xlim 0
+            ax[0].set_xlim(0, run_steps - 1)
+            # tick on x for every step discretely
+            ax[0].plot(actual_costs)
+            ax[0].set_title(f"actual costs total: {sum(actual_costs)}")
+            ax[0].set_ylim(0, max(actual_costs) * 1.1)
+            ax[1].plot(rollout_costs)
+            ax[1].set_title(f"rollout costs total: {sum(rollout_costs)}")
+            # set the y axis to be log scale
+            ax[1].set_yscale('log')
+
+            ax[2].plot(controls[:, 0], label='u0')
+            ax[2].plot(controls[:, 1], label='u1')
+            ax[2].legend()
+            ax[2].set_title(f"control inputs total diff: {control_diff.abs().sum()}")
+            ax[2].set_xticks(range(run_steps))
+            plt.tight_layout()
+            plt.pause(0.001)
+            input("Press Enter to close the window and exit...")
+
+
 def main():
-    seed(1)
     device = "cpu"
     dtype = torch.double
+    pytorch_seed.seed(0)
 
     # create toy environment to do on control on (default start and goal)
     env = Toy2DEnvironment(visualize=True, terminal_scale=10, device=device)
-
     # create MPPI with some initial parameters
-    # mppi = MPPI(env.dynamics, env.running_cost, 2,
-    #             noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-    #             num_samples=500,
-    #             horizon=20, device=device,
-    #             terminal_state_cost=env.terminal_cost,
-    #             u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
-    #             lambda_=1)
+    mppi = MPPI(env.dynamics, env.running_cost, 2,
+                noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                num_samples=500,
+                horizon=20, device=device,
+                terminal_state_cost=env.terminal_cost,
+                u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
+                lambda_=10)
     # mppi = SMPPI(env.dynamics, env.running_cost, 2,
     #              noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
     #              w_action_seq_cost=0,
@@ -283,91 +361,15 @@ def main():
     #              u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
     #              action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
     #              lambda_=10)
-    mppi = KMPPI(env.dynamics, env.running_cost, 2,
-                 noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-                 num_samples=500,
-                 horizon=20, device=device,
-                 num_support_pts=5,
-                 terminal_state_cost=env.terminal_cost,
-                 u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
-                 lambda_=1)
-
-    # use the same nominal trajectory to start with for all the evaluations for fairness
-    # parameters for our sample evaluation function - lots of choices for the evaluation function
-    evaluate_running_cost = True
-    run_steps = 20
-    num_refinement_steps = 1
-
-    rollout_costs = []
-    actual_costs = []
-    controls = []
-    state = env.state
-    # we sample multiple trajectories for the same start to goal problem, but in your case you should consider
-    # evaluating over a diverse dataset of trajectories
-    for i in range(run_steps):
-        # mppi.U = nominal_trajectory.clone()
-        # the nominal trajectory at the start will be different if the horizon's changed
-        # mppi.change_horizon(mppi.T)
-        # usually MPPI will have its nominal trajectory warm-started from the previous iteration
-        # for a fair test of tuning we will reset its nominal trajectory to the same random one each time
-        # we manually warm it by refining it for some steps
-        u = None
-        for k in range(num_refinement_steps):
-            last_refinement = k == num_refinement_steps - 1
-            u = mppi.command(state, shift_nominal_trajectory=last_refinement)
-
-        rollout = mppi.get_rollouts(state)
-
-        rollout_cost = 0
-        this_cost = env.running_cost(state)
-        rollout = rollout[0]
-        # here we evaluate on the rollout MPPI cost of the resulting trajectories
-        # alternative costs for tuning the parameters are possible, such as just considering terminal cost
-        if evaluate_running_cost:
-            for t in range(len(rollout) - 1):
-                rollout_cost = rollout_cost + env.running_cost(rollout[t], mppi.U[t])
-        rollout_cost = rollout_cost + env.terminal_cost(rollout, mppi.U)
-        env.draw_rollouts([rollout])
-
-        prev_state = copy.deepcopy(state)
-        state = env.step(u)
-        env.draw_trajectory_step(prev_state, state)
-
-        print(f"step {i} state {state} current cost {this_cost} rollout cost {rollout_cost}")
-        actual_costs.append(this_cost.cpu())
-        rollout_costs.append(rollout_cost.cpu())
-        controls.append(u.cpu())
-
-    # plot the costs with the step
-    fig, ax = plt.subplots(nrows=3, sharex=True, figsize=(8, 14))
-    # xlim 0
-    ax[0].set_xlim(0, run_steps - 1)
-    # tick on x for every step discretely
-    ax[0].plot(actual_costs)
-    ax[0].set_title(f"actual costs total: {sum(actual_costs)}")
-    ax[0].set_ylim(0, max(actual_costs) * 1.1)
-    ax[1].plot(rollout_costs)
-    ax[1].set_title(f"rollout costs total: {sum(rollout_costs)}")
-    # set the y axis to be log scale
-    ax[1].set_yscale('log')
-
-    controls = torch.stack(controls)
-    # consider total difference
-    control_diff = torch.diff(controls, dim=0)
-
-    ax[2].plot(controls[:, 0], label='u0')
-    ax[2].plot(controls[:, 1], label='u1')
-    ax[2].legend()
-    ax[2].set_title(f"control inputs total diff: {control_diff.abs().sum()}")
-    ax[2].set_xticks(range(run_steps))
-    plt.tight_layout()
-    plt.pause(0.001)
-
-    print(f"total accumulated cost: {sum(actual_costs)}")
-    print(f"total accumulated rollout cost: {sum(rollout_costs)}")
-
-    input("Press Enter to close the window and exit...")
-    pass
+    # mppi = KMPPI(env.dynamics, env.running_cost, 2,
+    #              noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+    #              num_samples=500,
+    #              horizon=20, device=device,
+    #              num_support_pts=5,
+    #              terminal_state_cost=env.terminal_cost,
+    #              u_max=torch.tensor([2., 2.], dtype=dtype, device=device),
+    #              lambda_=1)
+    do_control(env, mppi, seeds=(0,1), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False)
 
 
 if __name__ == "__main__":
