@@ -7,7 +7,7 @@ import matplotlib.colors
 from matplotlib import pyplot as plt
 import os
 
-from pytorch_mppi import MPPI, SMPPI, KMPPI
+from pytorch_mppi import mppi
 import pytorch_seed
 import logging
 
@@ -355,7 +355,7 @@ def plot_result(ch):
     def simplify_name(name):
         # remove shared parameters
         return name.replace("K=500 T=20 M=1 ", "").replace("noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]]",
-                                                           "").replace("_lambda=1", "")
+                                                           "").replace("_lambda=1 ", " ")
 
     methods = {}
     for key, values in ch.items():
@@ -386,7 +386,12 @@ def plot_result(ch):
     allowed_names = [
         "MPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]]",
         "SMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] w=5 t=1.0",
-        "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=rbf4theta"
+        # "SMPPI_K=500 T=20 M=1 lambda=10 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] w=10 t=1.0",
+        "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=rbf4theta",
+        # "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=RBFKernel(sigma=1.5)",
+        "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=RBFKernel(sigma=2)",
+        # "KMPPI_K=500 T=20 M=1 lambda=10 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=RBFKernel(sigma=2)",
+        # "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=RBFKernel(sigma=3)",
     ]
 
     fig, ax = plt.subplots(nrows=2, sharex=True, figsize=(8, 14))
@@ -453,31 +458,32 @@ def main():
     # create toy environment to do on control on (default start and goal)
     env = Toy2DEnvironment(visualize=True, terminal_scale=10, device=device)
     # create MPPI with some initial parameters
-    mppi = MPPI(env.dynamics, env.running_cost, 2,
-                noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-                num_samples=500,
-                horizon=20, device=device,
-                terminal_state_cost=env.terminal_cost,
-                u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                lambda_=1)
-    smppi = SMPPI(env.dynamics, env.running_cost, 2,
-                  noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-                  w_action_seq_cost=5,
-                  num_samples=500,
-                  horizon=20, device=device,
-                  terminal_state_cost=env.terminal_cost,
-                  u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                  action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                  lambda_=1)
-    kmppi = KMPPI(env.dynamics, env.running_cost, 2,
-                  noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-                  num_samples=500,
-                  horizon=20, device=device,
-                  num_support_pts=5,
-                  terminal_state_cost=env.terminal_cost,
-                  u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                  lambda_=1)
-    for ctrl in [mppi, smppi, kmppi]:
+    mmppi = mppi.MPPI(env.dynamics, env.running_cost, 2,
+                      noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                      num_samples=500,
+                      horizon=20, device=device,
+                      terminal_state_cost=env.terminal_cost,
+                      u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                      lambda_=1)
+    smppi = mppi.SMPPI(env.dynamics, env.running_cost, 2,
+                       noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                       w_action_seq_cost=20,
+                       num_samples=500,
+                       horizon=20, device=device,
+                       terminal_state_cost=env.terminal_cost,
+                       u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                       action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                       lambda_=1)
+    kmppi = mppi.KMPPI(env.dynamics, env.running_cost, 2,
+                       noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                       kernel=mppi.RBFKernel(sigma=2),
+                       num_samples=500,
+                       horizon=20, device=device,
+                       num_support_pts=5,
+                       terminal_state_cost=env.terminal_cost,
+                       u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
+                       lambda_=10)
+    for ctrl in [kmppi]:
         do_control(env, ctrl, ch, seeds=range(10), run_steps=20, num_refinement_steps=1, save_img=True,
                    plot_single=False)
 

@@ -443,16 +443,23 @@ class SMPPI(MPPI):
         return self.cost_total
 
 
-def rbf4theta(t, tk, sigma=1):  # higher for more smooth decay from 1
-    d = torch.sum((t[:, None] - tk) ** 2, dim=-1)
-    k = torch.exp(-d / (1e-8 + 2 * sigma ** 2))
-    return k
+class RBFKernel:
+    def __init__(self, sigma=1):
+        self.sigma = sigma
+
+    def __repr__(self):
+        return f"RBFKernel(sigma={self.sigma})"
+
+    def __call__(self, t, tk):
+        d = torch.sum((t[:, None] - tk) ** 2, dim=-1)
+        k = torch.exp(-d / (1e-8 + 2 * self.sigma ** 2))
+        return k
 
 
 class KMPPI(MPPI):
     """MPPI with kernel interpolation of control points for smoothing"""
 
-    def __init__(self, *args, num_support_pts=None, interpolation_kernel=rbf4theta, **kwargs):
+    def __init__(self, *args, num_support_pts=None, kernel=RBFKernel(), **kwargs):
         super().__init__(*args, **kwargs)
         self.num_support_pts = num_support_pts or self.T // 2
         # control points to be sampled
@@ -460,12 +467,12 @@ class KMPPI(MPPI):
         self.Tk = None
         self.Hs = None
         # interpolation kernel
-        self.interpolation_kernel = interpolation_kernel
+        self.interpolation_kernel = kernel
         self.intp_krnl = None
         self.prepare_vmap_interpolation()
 
     def get_params(self):
-        return f"{super().get_params()} num_support_pts={self.num_support_pts} kernel={self.interpolation_kernel.__name__}"
+        return f"{super().get_params()} num_support_pts={self.num_support_pts} kernel={self.interpolation_kernel}"
 
     def reset(self):
         super().reset()
