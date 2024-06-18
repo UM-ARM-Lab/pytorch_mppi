@@ -38,6 +38,7 @@ class MPPI():
                  rollout_var_cost=0,
                  rollout_var_discount=0.95,
                  sample_null_action=False,
+                 specific_action_sampler=None,
                  noise_abs_cost=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
@@ -60,6 +61,8 @@ class MPPI():
         :param rollout_var_cost: Cost attached to the variance of costs across trajectory rollouts
         :param rollout_var_discount: Discount of variance cost over control horizon
         :param sample_null_action: Whether to explicitly sample a null action (bad for starting in a local minima)
+        :param specific_action_sampler: Function to explicitly sample actions to use instead of sampling from noise from
+            nominal trajectory, may output a number of action trajectories fewer than horizon
         :param noise_abs_cost: Whether to use the absolute value of the action noise to avoid bias when all states have the same cost
         """
         self.d = device
@@ -117,8 +120,10 @@ class MPPI():
         self.running_cost = running_cost
         self.terminal_state_cost = terminal_state_cost
         self.sample_null_action = sample_null_action
+        self.specific_action_sampler = specific_action_sampler
         self.noise_abs_cost = noise_abs_cost
         self.state = None
+        self.info = None
 
         # handling dynamics models that output a distribution (take multiple trajectory samples)
         self.M = rollout_samples
@@ -155,13 +160,15 @@ class MPPI():
         self.U = torch.roll(self.U, -1, dims=0)
         self.U[-1] = self.u_init
 
-    def command(self, state, shift_nominal_trajectory=True):
+    def command(self, state, shift_nominal_trajectory=True, info=None):
         """
         :param state: (nx) or (K x nx) current state, or samples of states (for propagating a distribution of states)
         :param shift_nominal_trajectory: Whether to roll the nominal trajectory forward one step. This should be True
-        if the command is to be executed. If the nominal trajectory is to be refined then it should be False.
+            if the command is to be executed. If the nominal trajectory is to be refined then it should be False.
+        :param info: Optional dictionary to store context information
         :returns action: (nu) best action
         """
+        self.info = info
         if shift_nominal_trajectory:
             self.shift_nominal_trajectory()
 
@@ -255,12 +262,25 @@ class MPPI():
         noise = self.noise_dist.rsample((self.K, self.T))
         # broadcast own control to noise over samples; now it's K x T x nu
         perturbed_action = self.U + noise
-        if self.sample_null_action:
-            perturbed_action[self.K - 1] = 0
+        perturbed_action = self._sample_specific_actions(perturbed_action)
         # naively bound control
         self.perturbed_action = self._bound_action(perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.noise = self.perturbed_action - self.U
+
+    def _sample_specific_actions(self, perturbed_action):
+        # specific sampling of actions (encoding trajectory prior and domain knowledge to create biases)
+        i = 0
+        if self.sample_null_action:
+            perturbed_action[i] = 0
+            i += 1
+        if self.specific_action_sampler is not None:
+            actions = self.specific_action_sampler(self.state, self.info)
+            # check how long it is
+            actions = actions.reshape(-1, self.T, self.nu)
+            perturbed_action[i:i + actions.shape[0]] = actions
+            i += actions.shape[0]
+        return perturbed_action
 
     def _compute_total_cost_batch(self):
         self._compute_perturbed_action_and_noise()
@@ -412,8 +432,7 @@ class SMPPI(MPPI):
         self.perturbed_control = self._bound_d_action(perturbed_control)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
         self.perturbed_action = self.action_sequence + perturbed_control * self.delta_t
-        if self.sample_null_action:
-            self.perturbed_action[self.K - 1] = 0
+        self.perturbed_action = self._sample_specific_actions(self.perturbed_action)
         self.perturbed_action = self._bound_action(self.perturbed_action)
 
         self.noise = (self.perturbed_action - self.action_sequence) / self.delta_t - self.U
@@ -517,8 +536,7 @@ class KMPPI(MPPI):
         perturbed_control_pts = self._bound_action(perturbed_control_pts)
         self.noise_theta = perturbed_control_pts - self.theta
         perturbed_action, _ = self.deparameterize_to_trajectory_batch(perturbed_control_pts)
-        if self.sample_null_action:
-            perturbed_action[self.K - 1] = 0
+        perturbed_action = self._sample_specific_actions(perturbed_action)
         # naively bound control
         self.perturbed_action = self._bound_action(perturbed_action)
         # bounded noise after bounding (some got cut off, so we don't penalize that in action cost)
