@@ -1,5 +1,6 @@
 import logging
 import time
+import typing
 
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -11,6 +12,25 @@ logger = logging.getLogger(__name__)
 
 def _ensure_non_zero(cost, beta, factor):
     return torch.exp(-factor * (cost - beta))
+
+
+class SpecificActionSampler:
+    def __init__(self):
+        self.start_idx = 0
+        self.end_idx = 0
+        self.slice = slice(0, 0)
+
+    def sample_trajectories(self, state, info):
+        raise NotImplementedError
+
+    def specific_dynamics(self, next_state, state, action, t):
+        """Handle dynamics in a specific way for the specific action sampler; defaults to using default dynamics"""
+        return next_state
+
+    def register_sample_start_end(self, start_idx, end_idx):
+        self.start_idx = start_idx
+        self.end_idx = end_idx
+        self.slice = slice(start_idx, end_idx)
 
 
 class MPPI():
@@ -38,7 +58,7 @@ class MPPI():
                  rollout_var_cost=0,
                  rollout_var_discount=0.95,
                  sample_null_action=False,
-                 specific_action_sampler=None,
+                 specific_action_sampler: typing.Optional[SpecificActionSampler] = None,
                  noise_abs_cost=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
@@ -233,7 +253,10 @@ class MPPI():
         actions = []
         for t in range(T):
             u = self.u_scale * perturbed_actions[:, t].repeat(self.M, 1, 1)
-            state = self._dynamics(state, u, t)
+            next_state = self._dynamics(state, u, t)
+            # potentially handle dynamics in a specific way for the specific action sampler
+            next_state = self._sample_specific_dynamics(next_state, state, u, t)
+            state = next_state
             c = self._running_cost(state, u, t)
             cost_samples = cost_samples + c
             if self.M > 1:
@@ -275,12 +298,18 @@ class MPPI():
             perturbed_action[i] = 0
             i += 1
         if self.specific_action_sampler is not None:
-            actions = self.specific_action_sampler(self.state, self.info)
+            actions = self.specific_action_sampler.sample_trajectories(self.state, self.info)
             # check how long it is
             actions = actions.reshape(-1, self.T, self.nu)
             perturbed_action[i:i + actions.shape[0]] = actions
+            self.specific_action_sampler.register_sample_start_end(i, i + actions.shape[0])
             i += actions.shape[0]
         return perturbed_action
+
+    def _sample_specific_dynamics(self, next_state, state, u, t):
+        if self.specific_action_sampler is not None:
+            next_state = self.specific_action_sampler.specific_dynamics(next_state, state, u, t)
+        return next_state
 
     def _compute_total_cost_batch(self):
         self._compute_perturbed_action_and_noise()
