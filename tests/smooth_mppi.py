@@ -156,7 +156,7 @@ class Toy2DEnvironment:
             # self.draw_start()
             self.draw_goal()
 
-    def draw_rollouts(self, rollouts):
+    def draw_rollouts(self, rollouts, color="skyblue", label=None):
         if not self.visualize:
             return
         self.clear_artist(self.rollout_artist)
@@ -165,7 +165,7 @@ class Toy2DEnvironment:
             # r = torch.cat((self.start.reshape(1, -1), rollout))
             r = rollout.cpu()
             artists += [self.ax.scatter(r[0, 0], r[0, 1], color="tab:blue")]
-            artists += self.ax.plot(r[:, 0], r[:, 1], color="skyblue")
+            artists += self.ax.plot(r[:, 0], r[:, 1], color=color, label=label)
             artists += [self.ax.scatter(r[-1, 0], r[-1, 1], color="tab:red")]
         self.rollout_artist = artists
         plt.pause(0.001)
@@ -201,8 +201,12 @@ class Toy2DEnvironment:
         a = []
         a.append(self.ax.contourf(x, z, v, levels=[2, 4, 8, 16, 24, 32, 40, 50, 60, 80, 100, 150, 200, 250], norm=norm,
                                   cmap=self.cmap))
+        # a.append(self.ax.contourf(x, z, v, norm=norm,
+        #                           cmap=self.cmap))
+        # reduce opacity
         a.append(self.ax.contour(x, z, v, levels=a[0].levels, colors='k', linestyles='dashed'))
         a.append(self.ax.clabel(a[1], a[1].levels, inline=True, fontsize=13))
+        a[1].set_alpha(0.3)
         self.cost_artist = a
 
         plt.draw()
@@ -247,6 +251,17 @@ def make_gif(imgs_dir, gif_name):
         if filename.endswith(".png"):
             images.append(imageio.v2.imread(os.path.join(imgs_dir, filename)))
     imageio.mimsave(gif_name, images, duration=0.1)
+
+
+def make_gif_ffmpeg(imgs_dir, gif_name, fps=6):
+    import subprocess
+    # first generate palette and then use it to generate gif
+    palette_path = os.path.join("images", "palette.png")
+    cmd = ["ffmpeg", "-y", "-i", os.path.join(imgs_dir, "%d.png"), "-vf", "palettegen", palette_path]
+    subprocess.run(cmd)
+    cmd = ["ffmpeg", "-y", "-framerate", str(fps), "-i", os.path.join(imgs_dir, "%d.png"), "-i", palette_path,
+           "-lavfi", "paletteuse", gif_name]
+    subprocess.run(cmd)
 
 
 def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False):
@@ -314,7 +329,8 @@ def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, 
 
         key = f"{mppi.__class__.__name__}"
         secondary_key = (seed, mppi.get_params())
-        make_gif("images/runs", f"images/gif/{key}_{seed}.gif")
+        # make_gif("images/runs", f"images/gif/{key}_{seed}.gif")
+        make_gif_ffmpeg("images/runs", f"images/gif/{key}_{seed}.gif", fps=10)
         if key not in ch:
             ch[key] = {}
         ch[key][secondary_key] = {
@@ -384,10 +400,10 @@ def plot_result(ch):
     print(f"all method keys\n{method_names}")
 
     allowed_names = [
-        "MPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]]",
-        "SMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] w=5 t=1.0",
+        # "MPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]]",
+        # "SMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] w=5 t=1.0",
         # "SMPPI_K=500 T=20 M=1 lambda=10 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] w=10 t=1.0",
-        "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=rbf4theta",
+        # "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=rbf4theta",
         # "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=RBFKernel(sigma=1.5)",
         "KMPPI_K=500 T=20 M=1 lambda=1 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=RBFKernel(sigma=2)",
         # "KMPPI_K=500 T=20 M=1 lambda=10 noise_mu=[0. 0.] noise_sigma=[[1. 0.], [0. 1.]] num_support_pts=5 kernel=RBFKernel(sigma=2)",
@@ -446,45 +462,44 @@ def plot_result(ch):
     input("Press Enter to close the window and exit...")
 
 
-def main():
+def main(plot_only=False):
     device = "cpu"
     dtype = torch.double
-    pytorch_seed.seed(0)
+    pytorch_seed.seed(2)
     ch = cache.LocalCache("mppi_res.pkl")
 
-    plot_result(ch)
-    exit(0)
+    if plot_only:
+        plot_result(ch)
+        return
 
     # create toy environment to do on control on (default start and goal)
     env = Toy2DEnvironment(visualize=True, terminal_scale=10, device=device)
+    shared_params = {
+        "num_samples": 500,
+        "horizon": 20,
+        "noise_mu": torch.zeros(2, dtype=dtype, device=device),
+        "noise_sigma": torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+        "u_max": torch.tensor([1., 1.], dtype=dtype, device=device),
+        "terminal_state_cost": env.terminal_cost,
+        "lambda_": 1,
+        "device": device,
+    }
     # create MPPI with some initial parameters
     mmppi = mppi.MPPI(env.dynamics, env.running_cost, 2,
-                      noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
-                      num_samples=500,
-                      horizon=20, device=device,
-                      terminal_state_cost=env.terminal_cost,
-                      u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                      lambda_=1)
+                      **shared_params)
     smppi = mppi.SMPPI(env.dynamics, env.running_cost, 2,
-                       noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                       **shared_params,
                        w_action_seq_cost=20,
-                       num_samples=500,
-                       horizon=20, device=device,
-                       terminal_state_cost=env.terminal_cost,
-                       u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                       action_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                       lambda_=1)
+                       action_max=torch.tensor([1., 1.], dtype=dtype, device=device))
+    shared_params["lambda_"] = 10
     kmppi = mppi.KMPPI(env.dynamics, env.running_cost, 2,
-                       noise_sigma=torch.diag(torch.tensor([1., 1.], dtype=dtype, device=device)),
+                       **shared_params,
                        kernel=mppi.RBFKernel(sigma=2),
-                       num_samples=500,
-                       horizon=20, device=device,
                        num_support_pts=5,
-                       terminal_state_cost=env.terminal_cost,
-                       u_max=torch.tensor([1., 1.], dtype=dtype, device=device),
-                       lambda_=10)
+                       )
+
     for ctrl in [kmppi]:
-        do_control(env, ctrl, ch, seeds=range(10), run_steps=20, num_refinement_steps=1, save_img=True,
+        do_control(env, ctrl, ch, seeds=range(5), run_steps=20, num_refinement_steps=1, save_img=True,
                    plot_single=False)
 
 

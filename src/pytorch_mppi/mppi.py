@@ -337,7 +337,7 @@ class MPPI():
     def _slice_control(self, t):
         return slice(t * self.nu, (t + 1) * self.nu)
 
-    def get_rollouts(self, state, num_rollouts=1):
+    def get_rollouts(self, state, num_rollouts=1, U=None):
         """
             :param state: either (nx) vector or (num_rollouts x nx) for sampled initial states
             :param num_rollouts: Number of rollouts with same action sequence - for generating samples with stochastic
@@ -349,7 +349,8 @@ class MPPI():
         if state.size(0) == 1:
             state = state.repeat(num_rollouts, 1)
 
-        U = self.get_action_sequence()
+        if U is None:
+            U = self.get_action_sequence()
         T = U.shape[0]
         states = torch.zeros((num_rollouts, T + 1, self.nx), dtype=U.dtype, device=U.device)
         states[:, 0] = state
