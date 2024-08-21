@@ -168,6 +168,7 @@ class Toy2DEnvironment:
             artists += self.ax.plot(r[:, 0], r[:, 1], color=color, label=label)
             artists += [self.ax.scatter(r[-1, 0], r[-1, 1], color="tab:red")]
         self.rollout_artist = artists
+        self.ax.legend()
         plt.pause(0.001)
 
     def draw_trajectory_step(self, prev_state, cur_state, color="tab:blue"):
@@ -264,7 +265,7 @@ def make_gif_ffmpeg(imgs_dir, gif_name, fps=6):
     subprocess.run(cmd)
 
 
-def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False):
+def do_control(env, ctrl, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False):
     evaluate_running_cost = True
     if save_img:
         os.makedirs("images", exist_ok=True)
@@ -273,6 +274,7 @@ def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, 
 
     for seed in seeds:
         pytorch_seed.seed(seed)
+        key = f"{ctrl.__class__.__name__}"
 
         # use the same nominal trajectory to start with for all the evaluations for fairness
         # parameters for our sample evaluation function - lots of choices for the evaluation function
@@ -292,9 +294,9 @@ def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, 
             u = None
             for k in range(num_refinement_steps):
                 last_refinement = k == num_refinement_steps - 1
-                u = mppi.command(state, shift_nominal_trajectory=last_refinement)
+                u = ctrl.command(state, shift_nominal_trajectory=last_refinement)
 
-            rollout = mppi.get_rollouts(state)
+            rollout = ctrl.get_rollouts(state)
 
             rollout_cost = 0
             this_cost = env.running_cost(state)
@@ -303,9 +305,9 @@ def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, 
             # alternative costs for tuning the parameters are possible, such as just considering terminal cost
             if evaluate_running_cost:
                 for t in range(len(rollout) - 1):
-                    rollout_cost = rollout_cost + env.running_cost(rollout[t], mppi.U[t])
-            rollout_cost = rollout_cost + env.terminal_cost(rollout, mppi.U)
-            env.draw_rollouts([rollout])
+                    rollout_cost = rollout_cost + env.running_cost(rollout[t], ctrl.U[t])
+            rollout_cost = rollout_cost + env.terminal_cost(rollout, ctrl.U)
+            env.draw_rollouts([rollout], label=key)
 
             prev_state = copy.deepcopy(state)
             state = env.step(u)
@@ -325,10 +327,9 @@ def do_control(env, mppi, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, 
         print(f"total accumulated cost: {sum(actual_costs)}")
         print(f"total accumulated rollout cost: {sum(rollout_costs)}")
         env.reset()
-        mppi.reset()
+        ctrl.reset()
 
-        key = f"{mppi.__class__.__name__}"
-        secondary_key = (seed, mppi.get_params())
+        secondary_key = (seed, ctrl.get_params())
         # make_gif("images/runs", f"images/gif/{key}_{seed}.gif")
         make_gif_ffmpeg("images/runs", f"images/gif/{key}_{seed}.gif", fps=10)
         if key not in ch:
@@ -463,7 +464,7 @@ def plot_result(ch):
 
 
 def main(plot_only=False):
-    device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.double
     pytorch_seed.seed(2)
     ch = cache.LocalCache("mppi_res.pkl")
@@ -489,16 +490,15 @@ def main(plot_only=False):
                       **shared_params)
     smppi = mppi.SMPPI(env.dynamics, env.running_cost, 2,
                        **shared_params,
-                       w_action_seq_cost=20,
+                       w_action_seq_cost=10,
                        action_max=torch.tensor([1., 1.], dtype=dtype, device=device))
-    shared_params["lambda_"] = 10
     kmppi = mppi.KMPPI(env.dynamics, env.running_cost, 2,
                        **shared_params,
                        kernel=mppi.RBFKernel(sigma=2),
                        num_support_pts=5,
                        )
 
-    for ctrl in [kmppi]:
+    for ctrl in [mmppi, kmppi, smppi]:
         do_control(env, ctrl, ch, seeds=range(5), run_steps=20, num_refinement_steps=1, save_img=True,
                    plot_single=False)
 
