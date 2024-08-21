@@ -364,7 +364,9 @@ class MPPI():
 
 
 class SMPPI(MPPI):
-    """Smooth MPPI by lifting the control space and penalizing the change in action"""
+    """Smooth MPPI by lifting the control space and penalizing the change in action from
+    https://arxiv.org/pdf/2112.09988
+    """
 
     def __init__(self, *args, w_action_seq_cost=1., delta_t=1., U_init=None, action_min=None, action_max=None,
                  **kwargs):
@@ -492,7 +494,14 @@ class SMPPI(MPPI):
         return self.cost_total
 
 
-class RBFKernel:
+class TimeKernel:
+    """Kernel acting on the time dimension of trajectories for use in interpolation and smoothing"""
+
+    def __call__(self, t, tk):
+        raise NotImplementedError
+
+
+class RBFKernel(TimeKernel):
     def __init__(self, sigma=1):
         self.sigma = sigma
 
@@ -508,7 +517,7 @@ class RBFKernel:
 class KMPPI(MPPI):
     """MPPI with kernel interpolation of control points for smoothing"""
 
-    def __init__(self, *args, num_support_pts=None, kernel=RBFKernel(), **kwargs):
+    def __init__(self, *args, num_support_pts=None, kernel: TimeKernel = RBFKernel(), **kwargs):
         super().__init__(*args, **kwargs)
         self.num_support_pts = num_support_pts or self.T // 2
         # control points to be sampled
