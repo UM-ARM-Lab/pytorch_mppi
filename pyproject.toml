@@ -1,6 +1,6 @@
 [project]
 name = "pytorch_mppi"
-version = "0.7.5"
+version = "0.8.0"
 description = "Model Predictive Path Integral (MPPI) implemented in pytorch"
 readme = "README.md" # Optional
 

@@ -8,6 +8,9 @@ using importance sampling.
 Thus it can be used in place of other trajectory optimization methods
 such as the Cross Entropy Method (CEM), or random shooting.
 
+---
+New since Aug 2024 smoothing methods, including our own KMPPI, see the section below on smoothing
+
 # Installation
 ```shell
 pip install pytorch-mppi
@@ -77,6 +80,39 @@ if you're using a GPU device (remember to pass that in!)
 `noise_mu` - the default is 0 for all control dimensions, which may work out
 really poorly if you have control bounds and the allowed range is not 0-centered.
 Remember to change this to an appropriate value for non-symmetric control dimensions.
+
+## Smoothing
+From version 0.8.0 onwards, you can use MPPI variants that smooth the control signal. We've implemented
+[SMPPI](https://arxiv.org/pdf/2112.09988) as well our own kernel interpolation MPPI (KMPPI). In the base algorithm,
+you can achieve somewhat smoother trajectories by increasing `lambda_`; however, that comes at the cost of
+optimality. Explicit smoothing algorithms can achieve smoothness without sacrificing optimality.
+
+We used it and described it in our recent paper ([arxiv](https://arxiv.org/abs/2408.10450)) and you can cite it 
+until we release a work dedicated to KMPPI. Below we show the difference between MPPI, SMPPI, and KMPPI on a toy
+2D navigation problem where the control is a constrained delta position. You can check it out in `tests/smooth_mppi.py`.
+
+The API is mostly the same, with some additional constructor options:
+```python
+ctrl = mppi.KMPPI(args, 
+                 kernel=mppi.RBFKernel(sigma=2), # kernel in trajectory time space (1 dimensional)
+                 num_support_pts=5,              # number of control points to sample, <= horizon
+                 **kwargs)
+```
+The kernel can be any subclass of `mppi.TimeKernel`. It is a kernel in the trajectory time space (1 dimensional).
+Note that B-spline smoothing can be achieved by using a B-spline kernel. The number of support points is the number
+of control points to sample. Any trajectory points in between are interpolated using the kernel. For example if a
+trajectory horizon is 20 and `num_support_pts` is 5, then 5 control points evenly spaced throughout the horizon
+(with the first and last corresponding to the actual start and end of the trajectory) are sampled. The rest of the
+trajectory is interpolated using the kernel. The kernel is applied to the control signal, not the state signal.
+
+MPPI without smoothing
+![MPPI](https://imgur.com/aXSo3Ib.gif) 
+[SMPPI](https://arxiv.org/pdf/2112.09988) smoothing by sampling noise in the action derivative space doesn't work well on this problem
+![SMPPI](https://imgur.com/y1hvqlD.gif)
+KMPPI smoothing with RBF kernel works well
+![KMPPI](https://imgur.com/mZmbC4S.gif)
+
+
 
 ## Autotune
 from version 0.5.0 onwards, you can automatically tune the hyperparameters.
