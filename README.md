@@ -106,10 +106,15 @@ trajectory horizon is 20 and `num_support_pts` is 5, then 5 control points evenl
 trajectory is interpolated using the kernel. The kernel is applied to the control signal, not the state signal.
 
 MPPI without smoothing
+
 ![MPPI](https://imgur.com/aXSo3Ib.gif) 
+
 [SMPPI](https://arxiv.org/pdf/2112.09988) smoothing by sampling noise in the action derivative space doesn't work well on this problem
+
 ![SMPPI](https://imgur.com/y1hvqlD.gif)
+
 KMPPI smoothing with RBF kernel works well
+
 ![KMPPI](https://imgur.com/mZmbC4S.gif)
 
 
