@@ -9,7 +9,7 @@ Thus it can be used in place of other trajectory optimization methods
 such as the Cross Entropy Method (CEM), or random shooting.
 
 ---
-New since Aug 2024 smoothing methods, including our own KMPPI, see the section below on smoothing
+New since Aug 2024 smoothing methods, including our own KMPPI, see the [section](#smoothing) below on smoothing
 
 # Installation
 ```shell
