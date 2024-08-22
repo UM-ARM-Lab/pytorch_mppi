@@ -108,16 +108,15 @@ trajectory is interpolated using the kernel. The kernel is applied to the contro
 
 MPPI without smoothing
 
-![MPPI](https://imgur.com/aXSo3Ib.gif) 
+![MPPI](https://imgur.com/9wEcT2s.gif) 
 
 [SMPPI](https://arxiv.org/pdf/2112.09988) smoothing by sampling noise in the action derivative space doesn't work well on this problem
 
-![SMPPI](https://imgur.com/y1hvqlD.gif)
+![SMPPI](https://imgur.com/xwYy3aj.gif)
 
 KMPPI smoothing with RBF kernel works well
 
-![KMPPI](https://imgur.com/mZmbC4S.gif)
-
+![KMPPI](https://imgur.com/IG1Zrtd.gif)
 
 
 ## Autotune

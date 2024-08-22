@@ -10,8 +10,13 @@ import os
 from pytorch_mppi import mppi
 import pytorch_seed
 import logging
+import collections
 
-# import window_recorder
+def is_sequence(obj):
+    if isinstance(obj, str):
+        return False
+    return isinstance(obj, collections.abc.Sequence)
+
 
 plt.switch_backend('Qt5Agg')
 
@@ -156,19 +161,33 @@ class Toy2DEnvironment:
             # self.draw_start()
             self.draw_goal()
 
-    def draw_rollouts(self, rollouts, color="skyblue", label=None):
+    @staticmethod
+    def get_v(i, values, rollouts):
+        if type(values) != str and is_sequence(values) and len(values) == len(rollouts):
+            c = values[i]
+        else:
+            c = values
+        return c
+
+    def draw_rollouts(self, rollouts, color="skyblue", label=None, end_state_color="tab:red", linewidth=1.5):
         if not self.visualize:
             return
         self.clear_artist(self.rollout_artist)
         artists = []
-        for rollout in rollouts:
-            # r = torch.cat((self.start.reshape(1, -1), rollout))
+        for i, rollout in enumerate(rollouts):
+            # prepend start state
+            rollout = torch.cat([self.state.view(1, -1), rollout], dim=0)
             r = rollout.cpu()
             artists += [self.ax.scatter(r[0, 0], r[0, 1], color="tab:blue")]
-            artists += self.ax.plot(r[:, 0], r[:, 1], color=color, label=label)
-            artists += [self.ax.scatter(r[-1, 0], r[-1, 1], color="tab:red")]
+            # if color is a string treat it as a single color, otherwise treat it as a list of colors
+            artists += self.ax.plot(r[:, 0], r[:, 1],
+                                    color=self.get_v(i, color, rollouts),
+                                    label=self.get_v(i, label, rollouts),
+                                    linewidth=self.get_v(i, linewidth, rollouts))
+            artists += [self.ax.scatter(r[-1, 0], r[-1, 1], color=self.get_v(i, end_state_color, rollouts))]
         self.rollout_artist = artists
-        self.ax.legend()
+        if label is not None:
+            self.ax.legend(loc = "upper right")
         plt.pause(0.001)
 
     def draw_trajectory_step(self, prev_state, cur_state, color="tab:blue"):
@@ -179,6 +198,7 @@ class Toy2DEnvironment:
         artists = self.trajectory_artist
         artists += self.ax.plot([prev_state[0].cpu(), cur_state[0].cpu()],
                                 [prev_state[1].cpu(), cur_state[1].cpu()], color=color)
+        plt.draw()
         plt.pause(0.001)
 
     def clear_trajectory(self):
@@ -265,8 +285,8 @@ def make_gif_ffmpeg(imgs_dir, gif_name, fps=6):
     subprocess.run(cmd)
 
 
-def do_control(env, ctrl, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False):
-    evaluate_running_cost = True
+def do_control(env, ctrl, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, save_img=True, plot_single=False,
+               evaluate_running_cost=True, plot_trajectory_candidates=False):
     if save_img:
         os.makedirs("images", exist_ok=True)
         os.makedirs("images/runs", exist_ok=True)
@@ -307,10 +327,51 @@ def do_control(env, ctrl, ch, seeds=(0,), run_steps=20, num_refinement_steps=1, 
                 for t in range(len(rollout) - 1):
                     rollout_cost = rollout_cost + env.running_cost(rollout[t], ctrl.U[t])
             rollout_cost = rollout_cost + env.terminal_cost(rollout, ctrl.U)
-            env.draw_rollouts([rollout], label=key)
 
             prev_state = copy.deepcopy(state)
             state = env.step(u)
+
+            if plot_trajectory_candidates:
+                from matplotlib import cm
+                # only plot some candidates rather than all of them
+                num_candidates = min(10, ctrl.K)
+                # for the combined trajectory
+                color = []
+                end_color = []
+                rollouts = []
+                linewidth = []
+                labels = []
+                # for all the candidates
+                # create matplotlib color map based on cost
+                cost = ctrl.cost_total.cpu()
+                best_idx = torch.argsort(cost)
+
+                norm = matplotlib.colors.Normalize(vmin=cost.min(), vmax=cost[best_idx][:num_candidates*5].max())
+                m = cm.ScalarMappable(norm=norm, cmap=cm.jet)
+
+                traj_color = m.to_rgba(cost)
+                # lower alpha
+                traj_color[:, 3] = 0.2
+
+                # get rollouts per sampled action trajectory
+                for j in range(num_candidates):
+                    idx = best_idx[j]
+                    this_U = ctrl.actions[0, idx]
+                    rollouts.append(ctrl.get_rollouts(state, U=this_U)[0])
+                    color.append(traj_color[idx])
+                    end_color.append([1, 0, 0, 0.2])
+                    linewidth.append(1)
+                    labels.append(None)
+                color.append("skyblue")
+                end_color.append("tab:red")
+                rollouts.append(rollout)
+                linewidth.append(2)
+                labels.append(key)
+                env.draw_rollouts(rollouts, color=color, end_state_color=end_color, linewidth=linewidth, label=labels)
+            else:
+                # just draw the single state rollout
+                env.draw_rollouts([rollout], label=key)
+
             env.draw_trajectory_step(prev_state, state)
 
             if save_img:
@@ -500,7 +561,7 @@ def main(plot_only=False):
 
     for ctrl in [mmppi, kmppi, smppi]:
         do_control(env, ctrl, ch, seeds=range(5), run_steps=20, num_refinement_steps=1, save_img=True,
-                   plot_single=False)
+                   plot_single=False, evaluate_running_cost=False, plot_trajectory_candidates=True)
 
 
 if __name__ == "__main__":
