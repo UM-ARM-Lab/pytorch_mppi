@@ -93,6 +93,7 @@ until we release a work dedicated to KMPPI. Below we show the difference between
 
 The API is mostly the same, with some additional constructor options:
 ```python
+import pytorch_mppi as mppi
 ctrl = mppi.KMPPI(args, 
                  kernel=mppi.RBFKernel(sigma=2), # kernel in trajectory time space (1 dimensional)
                  num_support_pts=5,              # number of control points to sample, <= horizon
