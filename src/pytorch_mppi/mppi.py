@@ -37,6 +37,8 @@ class MPPI():
                  rollout_var_cost=0,
                  rollout_var_discount=0.95,
                  sample_null_action=False,
+                 online_iters=1,
+                 warmstart_iters=1,
                  noise_abs_cost=False):
         """
         :param dynamics: function(state, action) -> next_state (K x nx) taking in batch state (K x nx) and action (K x nu)
@@ -131,6 +133,11 @@ class MPPI():
         self.states = None
         self.actions = None
 
+        self.warmstart_iters = warmstart_iters
+        self.online_iters = online_iters
+
+        self.ctr = 0
+
     @handle_batch_input(n=2)
     def _dynamics(self, state, u, t):
         return self.F(state, u, t) if self.step_dependency else self.F(state, u)
@@ -162,21 +169,29 @@ class MPPI():
     def _command(self, state):
         if not torch.is_tensor(state):
             state = torch.tensor(state)
-        self.state = state.to(dtype=self.dtype, device=self.d)
-        cost_total = self._compute_total_cost_batch()
-        beta = torch.min(cost_total)
-        self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
-        eta = torch.sum(self.cost_total_non_zero)
-        self.omega = (1. / eta) * self.cost_total_non_zero
-        perturbations = []
-        for t in range(self.T):
-            perturbations.append(torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0))
-        perturbations = torch.stack(perturbations)
-        self.U = self.U + perturbations
+        if self.ctr == 0:
+            iters = self.warmstart_iters
+        else:
+            iters = self.online_iters
+        for i in range(iters):
+            self.state = state.to(dtype=self.dtype, device=self.d)
+            cost_total = self._compute_total_cost_batch()
+            beta = torch.min(cost_total)
+            self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
+            eta = torch.sum(self.cost_total_non_zero)
+            self.omega = (1. / eta) * self.cost_total_non_zero
+            perturbations = []
+            for t in range(self.T):
+                perturbations.append(torch.sum(self.omega.view(-1, 1) * self.noise[:, t], dim=0))
+            perturbations = torch.stack(perturbations)
+            self.U = self.U + perturbations
+            if self.ctr > 0:
+                break
         action = self.U[:self.u_per_command]
         # reduce dimensionality if we only need the first command
         if self.u_per_command == 1:
             action = action[0]
+        self.ctr += 1
         return action
 
     def change_horizon(self, horizon):
@@ -193,6 +208,7 @@ class MPPI():
         Clear controller state after finishing a trial
         """
         self.U = self.noise_dist.sample((self.T,))
+        self.ctr = 0
 
     def _compute_rollout_costs(self, perturbed_actions):
         K, T, nu = perturbed_actions.shape
