@@ -306,6 +306,44 @@ def run_benchmarks():
             print(f"  {label:<8s}: {res['mean_s']*1000:>8.2f}ms total, "
                   f"{res['per_step_s']*1000:.2f}ms/step")
 
+        # --- Compiled comparison ---
+        print(f"\n--- Compiled vs eager (K=500, T=15) ---")
+        for label, ctrl_cls, extra in [
+            ("MPPI", MPPI, {}),
+            ("KMPPI", KMPPI, {"num_support_pts": 5, "kernel": RBFKernel(sigma=2.0)}),
+        ]:
+            torch.manual_seed(SEED)
+            ctrl = ctrl_cls(dynamics, cost, 2, noise_sigma,
+                            num_samples=500, horizon=15, device=device, lambda_=1.0,
+                            **extra)
+            ctrl.compile()
+            # warmup compile
+            ctrl.command(start)
+            ctrl.command(start)
+            res = benchmark_command(ctrl, start)
+            key = f"{device}/compiled/{label}"
+            results[key] = res
+            print(f"  {label:<8s} compiled: {res['mean_s']*1000:>8.2f}ms")
+
+        print(f"\n--- Compiled multi-step loop: 20 steps (K=500, T=15) ---")
+        for label, ctrl_cls, extra in [
+            ("MPPI", MPPI, {}),
+            ("KMPPI", KMPPI, {"num_support_pts": 5, "kernel": RBFKernel(sigma=2.0)}),
+        ]:
+            torch.manual_seed(SEED)
+            ctrl = ctrl_cls(dynamics, cost, 2, noise_sigma,
+                            num_samples=500, horizon=15, device=device, lambda_=1.0,
+                            **extra)
+            ctrl.compile()
+            # warmup compile
+            ctrl.command(start)
+            ctrl.command(start)
+            res = benchmark_multi_step(ctrl, start, dynamics, num_steps=20)
+            key = f"{device}/compiled_loop/{label}"
+            results[key] = res
+            print(f"  {label:<8s} compiled: {res['mean_s']*1000:>8.2f}ms total, "
+                  f"{res['per_step_s']*1000:.2f}ms/step")
+
         # --- Higher dimensional ---
         print(f"\n--- Higher dimensional (nx=10, nu=3, K=500, T=15) ---")
         nx, nu = 10, 3

@@ -662,6 +662,33 @@ class TestEdgeCases:
         action = ctrl.command(state)
         assert action.dtype == torch.float32
 
+    def test_compile(self, noise_sigma):
+        """torch.compile should produce valid results."""
+        _seed()
+        ctrl = MPPI(linear_dynamics, quadratic_cost, 2, noise_sigma,
+                     num_samples=50, horizon=5, device=DEVICE)
+        ctrl.compile()
+        state = torch.tensor([0.0, 0.0], dtype=DTYPE, device=DEVICE)
+        action = ctrl.command(state)
+        assert action.shape == (2,)
+        assert torch.isfinite(action).all()
+        # run multiple steps to verify stability
+        for _ in range(5):
+            action = ctrl.command(state)
+            state = linear_dynamics(state.unsqueeze(0), action.unsqueeze(0)).squeeze(0)
+        assert torch.isfinite(state).all()
+
+    def test_compile_kmppi(self, noise_sigma):
+        """torch.compile on KMPPI should work."""
+        _seed()
+        ctrl = KMPPI(linear_dynamics, quadratic_cost, 2, noise_sigma,
+                      num_samples=50, horizon=10, device=DEVICE, num_support_pts=5)
+        ctrl.compile()
+        state = torch.tensor([0.0, 0.0], dtype=DTYPE, device=DEVICE)
+        action = ctrl.command(state)
+        assert action.shape == (2,)
+        assert torch.isfinite(action).all()
+
 
 # ---------------------------------------------------------------------------
 # Solution quality helper

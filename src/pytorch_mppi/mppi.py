@@ -106,22 +106,24 @@ class MPPI():
             noise_sigma = noise_sigma.view(-1, 1)
 
         # bounds — resolve to tensor clamp values at init time (no branching in hot path)
-        self.u_min = u_min
-        self.u_max = u_max
         self.u_scale = u_scale
         self.u_per_command = u_per_command
         # make sure if any of them is specified, both are specified
-        if self.u_max is not None and self.u_min is None:
-            if not torch.is_tensor(self.u_max):
-                self.u_max = torch.tensor(self.u_max)
-            self.u_min = -self.u_max
-        if self.u_min is not None and self.u_max is None:
-            if not torch.is_tensor(self.u_min):
-                self.u_min = torch.tensor(self.u_min)
-            self.u_max = -self.u_min
-        if self.u_min is not None:
-            self.u_min = self.u_min.to(device=self.d)
-            self.u_max = self.u_max.to(device=self.d)
+        if u_max is not None and u_min is None:
+            if not torch.is_tensor(u_max):
+                u_max = torch.tensor(u_max)
+            u_min = -u_max
+        if u_min is not None and u_max is None:
+            if not torch.is_tensor(u_min):
+                u_min = torch.tensor(u_min)
+            u_max = -u_min
+        # resolve to +/-inf defaults so _bound_action is always a clamp (no branch)
+        if u_min is not None:
+            self.u_min = u_min.to(device=self.d)
+            self.u_max = u_max.to(device=self.d)
+        else:
+            self.u_min = torch.tensor(float('-inf'), device=self.d)
+            self.u_max = torch.tensor(float('inf'), device=self.d)
 
         self.noise_mu = noise_mu.to(self.d)
         self.noise_sigma = noise_sigma.to(self.d)
@@ -148,6 +150,8 @@ class MPPI():
         self.terminal_state_cost = terminal_state_cost
         self.sample_null_action = sample_null_action
         self.specific_action_sampler = specific_action_sampler
+        # resolve terminal_state_cost to a no-op if not provided (no branch in hot path)
+        self._terminal_state_cost_fn = terminal_state_cost if terminal_state_cost is not None else lambda states, actions: 0
         self.noise_abs_cost = noise_abs_cost
         self.state = None
         self.info = None
@@ -175,6 +179,15 @@ class MPPI():
         """Sample from N(noise_mu, noise_sigma) using pre-computed Cholesky factor."""
         z = torch.randn(*shape, self.nu, device=self.d, dtype=self.dtype)
         return z @ self.noise_sigma_chol.T + self.noise_mu
+
+    def compile(self, **kwargs):
+        """Compile the hot path with torch.compile for reduced kernel launch overhead.
+
+        User's dynamics and running_cost functions must be torch.compile-compatible
+        (no graph breaks) for full benefit. Any kwargs are passed to torch.compile.
+        """
+        self._dynamics_fn = torch.compile(self._dynamics_fn, **kwargs)
+        self._running_cost_fn = torch.compile(self._running_cost_fn, **kwargs)
 
     def get_params(self):
         return f"K={self.K} T={self.T} M={self.M} lambda={self.lambda_} noise_mu={self.noise_mu.cpu().numpy()} noise_sigma={self.noise_sigma.cpu().numpy()}".replace(
@@ -271,25 +284,31 @@ class MPPI():
         # pre-allocate output tensors instead of list + stack
         states = torch.empty(self.M, K, T, self.nx, device=self.d, dtype=self.dtype)
         actions = torch.empty(self.M, K, T, nu, device=self.d, dtype=self.dtype)
+        # flatten M x K batch dims for direct dynamics/cost calls (bypasses handle_batch_input)
+        MK = self.M * K
+        state_flat = state.reshape(MK, self.nx)
         for t in range(T):
             u = self.u_scale * perturbed_actions[:, t].expand(self.M, -1, -1)
-            next_state = self._dynamics(state, u, t)
+            u_flat = u.reshape(MK, nu)
+            state_flat = self._dynamics_fn(state_flat, u_flat, t)
             # potentially handle dynamics in a specific way for the specific action sampler
-            next_state = self._sample_specific_dynamics(next_state, state, u, t)
-            state = next_state
-            c = self._running_cost(state, u, t)
-            cost_samples = cost_samples + c
+            if self.specific_action_sampler is not None:
+                state_3d = state_flat.reshape(self.M, K, -1)
+                state_3d = self.specific_action_sampler.specific_dynamics(state_3d, state.reshape(self.M, K, -1), u, t)
+                state_flat = state_3d.reshape(MK, -1)
+            c = self._running_cost_fn(state_flat, u_flat, t)
+            # handle cost output — could be (MK,) or (MK, 1); ensure (M, K)
+            cost_samples = cost_samples + c.reshape(self.M, K)
             if self.M > 1:
-                cost_var += c.var(dim=0) * self._var_discount_factors[t]
+                cost_var += c.reshape(self.M, K).var(dim=0) * self._var_discount_factors[t]
 
             # Save total states/actions
-            states[:, :, t] = state
+            states[:, :, t] = state_flat.reshape(self.M, K, -1)[:, :, :self.nx]
             actions[:, :, t] = u
 
-        # action perturbation cost
-        if self.terminal_state_cost:
-            c = self.terminal_state_cost(states, actions)
-            cost_samples = cost_samples + c
+        # terminal state cost
+        c = self._terminal_state_cost_fn(states, actions)
+        cost_samples = cost_samples + c
         cost_total = cost_total + cost_samples.mean(dim=0)
         cost_total = cost_total + cost_var * self.rollout_var_cost
         return cost_total, states, actions
@@ -345,9 +364,7 @@ class MPPI():
         return self.cost_total
 
     def _bound_action(self, action):
-        if self.u_max is not None:
-            return torch.max(torch.min(action, self.u_max), self.u_min)
-        return action
+        return torch.clamp(action, self.u_min, self.u_max)
 
     def _slice_control(self, t):
         return slice(t * self.nu, (t + 1) * self.nu)
@@ -391,19 +408,20 @@ class SMPPI(MPPI):
         super().__init__(*args, U_init=U_init, **kwargs)
 
         # these are the actual commanded actions, which is now no longer directly sampled
-        self.action_min = action_min
-        self.action_max = action_max
-        if self.action_min is not None and self.action_max is None:
-            if not torch.is_tensor(self.action_min):
-                self.action_min = torch.tensor(self.action_min)
-            self.action_max = -self.action_min
-        if self.action_max is not None and self.action_min is None:
-            if not torch.is_tensor(self.action_max):
-                self.action_max = torch.tensor(self.action_max)
-            self.action_min = -self.action_max
-        if self.action_min is not None:
-            self.action_min = self.action_min.to(device=self.d)
-            self.action_max = self.action_max.to(device=self.d)
+        if action_min is not None and action_max is None:
+            if not torch.is_tensor(action_min):
+                action_min = torch.tensor(action_min)
+            action_max = -action_min
+        if action_max is not None and action_min is None:
+            if not torch.is_tensor(action_max):
+                action_max = torch.tensor(action_max)
+            action_min = -action_max
+        if action_min is not None:
+            self.action_min = action_min.to(device=self.d)
+            self.action_max = action_max.to(device=self.d)
+        else:
+            self.action_min = torch.tensor(float('-inf'), device=self.d)
+            self.action_max = torch.tensor(float('inf'), device=self.d)
 
         # this smooth formulation works better if control starts from 0
         if U_init is None:
@@ -441,14 +459,10 @@ class SMPPI(MPPI):
         self.T = horizon
 
     def _bound_d_action(self, control):
-        if self.u_max is not None:
-            return torch.max(torch.min(control, self.u_max), self.u_min)  # action
-        return control
+        return torch.clamp(control, self.u_min, self.u_max)
 
     def _bound_action(self, action):
-        if self.action_max is not None:
-            return torch.max(torch.min(action, self.action_max), self.action_min)
-        return action
+        return torch.clamp(action, self.action_min, self.action_max)
 
     def _command(self, state):
         if not torch.is_tensor(state):
