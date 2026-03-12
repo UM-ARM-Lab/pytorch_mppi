@@ -688,6 +688,191 @@ class KMPPI(MPPI):
         return action
 
 
+class MPPI_Batched:
+    """MPPI for N parallel environments sharing a single dynamics/cost call.
+
+    Instead of calling MPPI.command() N times independently, this class
+    concatenates all N×K samples into a single (N*K, nx) batch for one
+    dynamics/cost call per timestep, amortizing kernel launch overhead on GPU.
+
+    This is useful for parallel simulation (e.g., N robots training simultaneously).
+    """
+
+    def __init__(self, dynamics, running_cost, nx, noise_sigma, num_envs,
+                 num_samples=100, horizon=15, device="cpu",
+                 lambda_=1.,
+                 noise_mu=None,
+                 u_min=None,
+                 u_max=None,
+                 u_init=None,
+                 u_scale=1,
+                 u_per_command=1,
+                 step_dependent_dynamics=False,
+                 noise_abs_cost=False):
+        """
+        :param dynamics: function(state, action) -> next_state, called with (N*K, nx) batches
+        :param running_cost: function(state, action) -> cost, called with (N*K, nx) batches
+        :param nx: state dimension
+        :param noise_sigma: (nu x nu) control noise covariance
+        :param num_envs: N, number of parallel environments
+        :param num_samples: K, number of trajectory samples per environment
+        :param horizon: T, planning horizon
+        :param device: pytorch device
+        :param lambda_: temperature parameter
+        :param noise_mu: (nu) noise mean; defaults to zero
+        :param u_min: (nu) minimum control bounds
+        :param u_max: (nu) maximum control bounds
+        :param u_init: (nu) initial control value for new timesteps
+        :param u_scale: scaling factor applied to actions before dynamics
+        :param u_per_command: number of actions to return per command
+        :param step_dependent_dynamics: whether dynamics/cost take timestep as 3rd arg
+        :param noise_abs_cost: use absolute value of noise in action cost
+        """
+        self.d = device
+        self.dtype = noise_sigma.dtype
+        self.N = num_envs
+        self.K = num_samples
+        self.T = horizon
+        self.nx = nx
+        self.nu = 1 if len(noise_sigma.shape) == 0 else noise_sigma.shape[0]
+        self.lambda_ = lambda_
+        self.u_scale = u_scale
+        self.u_per_command = u_per_command
+
+        if noise_mu is None:
+            noise_mu = torch.zeros(self.nu, dtype=self.dtype)
+        if u_init is None:
+            u_init = torch.zeros_like(noise_mu)
+
+        if self.nu == 1:
+            noise_mu = noise_mu.view(-1)
+            noise_sigma = noise_sigma.view(-1, 1)
+
+        # bounds
+        if u_max is not None and u_min is None:
+            if not torch.is_tensor(u_max):
+                u_max = torch.tensor(u_max)
+            u_min = -u_max
+        if u_min is not None and u_max is None:
+            if not torch.is_tensor(u_min):
+                u_min = torch.tensor(u_min)
+            u_max = -u_min
+        if u_min is not None:
+            self.u_min = u_min.to(device=self.d)
+            self.u_max = u_max.to(device=self.d)
+        else:
+            self.u_min = torch.tensor(float('-inf'), device=self.d)
+            self.u_max = torch.tensor(float('inf'), device=self.d)
+
+        self.noise_mu = noise_mu.to(self.d)
+        self.noise_sigma = noise_sigma.to(self.d)
+
+        # diagonal sigma detection
+        self._diagonal_sigma = torch.equal(self.noise_sigma, torch.diag(torch.diag(self.noise_sigma)))
+        if self._diagonal_sigma:
+            diag = torch.diag(self.noise_sigma)
+            self._noise_sigma_inv_diag = 1.0 / diag
+            self._noise_sigma_sqrt_diag = torch.sqrt(diag)
+        else:
+            self.noise_sigma_inv = torch.linalg.inv(self.noise_sigma)
+            self._noise_sigma_chol = torch.linalg.cholesky(self.noise_sigma)
+
+        self.noise_abs_cost = noise_abs_cost
+
+        # action cost function
+        if self._diagonal_sigma:
+            inv_diag = self._noise_sigma_inv_diag
+            if noise_abs_cost:
+                self._compute_action_cost = lambda noise: self.lambda_ * torch.abs(noise) * inv_diag
+            else:
+                self._compute_action_cost = lambda noise: self.lambda_ * noise * inv_diag
+        else:
+            sigma_inv = self.noise_sigma_inv
+            if noise_abs_cost:
+                self._compute_action_cost = lambda noise: self.lambda_ * torch.abs(noise) @ sigma_inv
+            else:
+                self._compute_action_cost = lambda noise: self.lambda_ * noise @ sigma_inv
+
+        self.u_init = u_init.to(self.d)
+
+        # dynamics/cost wrappers
+        if step_dependent_dynamics:
+            self._dynamics_fn = dynamics
+            self._running_cost_fn = running_cost
+        else:
+            self._dynamics_fn = lambda state, u, t: dynamics(state, u)
+            self._running_cost_fn = lambda state, u, t: running_cost(state, u)
+
+        # (N, T, nu) nominal trajectories — one per environment
+        self.U = self._sample_noise((self.N, self.T))
+
+    def _sample_noise(self, shape):
+        z = torch.randn(*shape, self.nu, device=self.d, dtype=self.dtype)
+        if self._diagonal_sigma:
+            return z * self._noise_sigma_sqrt_diag + self.noise_mu
+        return z @ self._noise_sigma_chol.T + self.noise_mu
+
+    def compile(self, **kwargs):
+        self._dynamics_fn = torch.compile(self._dynamics_fn, **kwargs)
+        self._running_cost_fn = torch.compile(self._running_cost_fn, **kwargs)
+
+    def reset(self):
+        self.U = self._sample_noise((self.N, self.T))
+
+    def command(self, states, shift_nominal_trajectory=True):
+        """
+        :param states: (N, nx) current states for all environments
+        :param shift_nominal_trajectory: whether to shift U forward
+        :returns: (N, nu) or (N, u_per_command, nu) actions
+        """
+        if not torch.is_tensor(states):
+            states = torch.tensor(states)
+        states = states.to(dtype=self.dtype, device=self.d)
+        N, K, T, nu = self.N, self.K, self.T, self.nu
+
+        if shift_nominal_trajectory:
+            self.U = torch.roll(self.U, -1, dims=1)
+            self.U[:, -1] = self.u_init
+
+        # shared noise across environments: (K, T, nu)
+        noise = self._sample_noise((K, T))
+        # perturbed actions: (N, K, T, nu)
+        perturbed_actions = self.U.unsqueeze(1) + noise.unsqueeze(0)
+        perturbed_actions = torch.clamp(perturbed_actions, self.u_min, self.u_max)
+        actual_noise = perturbed_actions - self.U.unsqueeze(1)
+
+        # flatten (N, K) → (N*K) for single dynamics/cost call
+        NK = N * K
+        state = states.unsqueeze(1).expand(N, K, self.nx).reshape(NK, self.nx)
+        cost_total = torch.zeros(N, K, device=self.d, dtype=self.dtype)
+
+        for t in range(T):
+            u = self.u_scale * perturbed_actions[:, :, t].reshape(NK, nu)
+            state = self._dynamics_fn(state, u, t)
+            c = self._running_cost_fn(state, u, t)
+            cost_total = cost_total + c.reshape(N, K)
+
+        # action cost
+        action_cost = self._compute_action_cost(actual_noise)
+        perturbation_cost = torch.sum(self.U.unsqueeze(1) * action_cost, dim=(2, 3))
+        total_cost = cost_total + perturbation_cost
+
+        # independent weighting per environment
+        beta = total_cost.min(dim=1, keepdim=True).values
+        cost_non_zero = _ensure_non_zero(total_cost, beta, 1.0 / self.lambda_)
+        eta = cost_non_zero.sum(dim=1, keepdim=True)
+        omega = cost_non_zero / eta
+
+        # weighted perturbation update
+        perturbations = torch.einsum('nk,nktd->ntd', omega, actual_noise)
+        self.U = self.U + perturbations
+
+        action = self.U[:, :self.u_per_command]
+        if self.u_per_command == 1:
+            action = action[:, 0]
+        return action
+
+
 def run_mppi(mppi, env, retrain_dynamics, retrain_after_iter=50, iter=1000, render=True):
     dataset = torch.zeros((retrain_after_iter, mppi.nx + mppi.nu), dtype=mppi.U.dtype, device=mppi.d)
     total_reward = 0

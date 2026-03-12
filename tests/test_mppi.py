@@ -6,7 +6,7 @@ deterministic reproducibility.
 """
 import pytest
 import torch
-from pytorch_mppi import MPPI, SMPPI, KMPPI
+from pytorch_mppi import MPPI, SMPPI, KMPPI, MPPI_Batched
 from pytorch_mppi.mppi import RBFKernel, SpecificActionSampler
 
 # ---------------------------------------------------------------------------
@@ -696,6 +696,88 @@ class TestEdgeCases:
         action = ctrl.command(state)
         assert action.shape == (2,)
         assert torch.isfinite(action).all()
+
+
+# ---------------------------------------------------------------------------
+# MPPI_Batched Tests
+# ---------------------------------------------------------------------------
+class TestMPPIBatched:
+    def _make(self, noise_sigma, num_envs=4, **kwargs):
+        defaults = dict(
+            dynamics=linear_dynamics,
+            running_cost=quadratic_cost,
+            nx=2,
+            noise_sigma=noise_sigma,
+            num_envs=num_envs,
+            num_samples=100,
+            horizon=10,
+            device=DEVICE,
+            lambda_=1.0,
+        )
+        defaults.update(kwargs)
+        return MPPI_Batched(**defaults)
+
+    def test_basic_command(self, noise_sigma):
+        _seed()
+        ctrl = self._make(noise_sigma, num_envs=4)
+        states = torch.randn(4, 2, dtype=DTYPE, device=DEVICE)
+        action = ctrl.command(states)
+        assert action.shape == (4, 2)
+
+    def test_moves_toward_goal(self, noise_sigma):
+        """All environments should make progress toward goal."""
+        _seed()
+        N = 4
+        ctrl = self._make(noise_sigma, num_envs=N, num_samples=300)
+        states = torch.tensor([[-3.0, -2.0], [-1.0, -1.0], [0.0, 0.0], [1.0, -1.0]],
+                              dtype=DTYPE, device=DEVICE)
+        initial_dists = (states - GOAL).norm(dim=-1)
+        for _ in range(10):
+            actions = ctrl.command(states)
+            states = linear_dynamics(states, actions)
+        final_dists = (states - GOAL).norm(dim=-1)
+        # At least some environments should improve
+        assert (final_dists < initial_dists).any(), \
+            f"No environment improved: {initial_dists} -> {final_dists}"
+
+    def test_bounded_actions(self, noise_sigma):
+        _seed()
+        u_max = torch.tensor([0.5, 0.5], dtype=DTYPE, device=DEVICE)
+        ctrl = self._make(noise_sigma, num_envs=4, u_max=u_max)
+        states = torch.randn(4, 2, dtype=DTYPE, device=DEVICE)
+        for _ in range(5):
+            actions = ctrl.command(states)
+            assert (actions <= u_max + 1e-6).all()
+            assert (actions >= -u_max - 1e-6).all()
+            states = linear_dynamics(states, actions)
+
+    def test_independent_envs(self, noise_sigma):
+        """Different initial states should produce different actions."""
+        _seed()
+        ctrl = self._make(noise_sigma, num_envs=2, num_samples=200)
+        states = torch.tensor([[-5.0, -5.0], [5.0, 5.0]], dtype=DTYPE, device=DEVICE)
+        actions = ctrl.command(states)
+        # Very different states should yield different actions
+        assert not torch.allclose(actions[0], actions[1], atol=0.1), \
+            f"Actions too similar for very different states: {actions}"
+
+    def test_reset(self, noise_sigma):
+        _seed()
+        ctrl = self._make(noise_sigma, num_envs=2)
+        states = torch.randn(2, 2, dtype=DTYPE, device=DEVICE)
+        ctrl.command(states)
+        U_before = ctrl.U.clone()
+        ctrl.reset()
+        assert not torch.allclose(ctrl.U, U_before)
+
+    def test_compile(self, noise_sigma):
+        _seed()
+        ctrl = self._make(noise_sigma, num_envs=2, num_samples=50, horizon=5)
+        ctrl.compile()
+        states = torch.randn(2, 2, dtype=DTYPE, device=DEVICE)
+        actions = ctrl.command(states)
+        assert actions.shape == (2, 2)
+        assert torch.isfinite(actions).all()
 
 
 # ---------------------------------------------------------------------------
