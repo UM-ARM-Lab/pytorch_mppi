@@ -127,9 +127,16 @@ class MPPI():
 
         self.noise_mu = noise_mu.to(self.d)
         self.noise_sigma = noise_sigma.to(self.d)
-        self.noise_sigma_inv = torch.linalg.inv(self.noise_sigma)
-        # pre-compute Cholesky factor for fast noise sampling (replaces MultivariateNormal.rsample)
-        self.noise_sigma_chol = torch.linalg.cholesky(self.noise_sigma)
+        # detect diagonal covariance for fast element-wise ops
+        self._diagonal_sigma = torch.equal(self.noise_sigma, torch.diag(torch.diag(self.noise_sigma)))
+        if self._diagonal_sigma:
+            diag = torch.diag(self.noise_sigma)
+            self._noise_sigma_inv_diag = 1.0 / diag
+            self._noise_sigma_sqrt_diag = torch.sqrt(diag)
+            self.noise_sigma_inv = torch.diag(self._noise_sigma_inv_diag)
+        else:
+            self.noise_sigma_inv = torch.linalg.inv(self.noise_sigma)
+            self._noise_sigma_chol = torch.linalg.cholesky(self.noise_sigma)
         # T x nu control sequence
         self.U = U_init
         self.u_init = u_init.to(self.d)
@@ -153,6 +160,7 @@ class MPPI():
         # resolve terminal_state_cost to a no-op if not provided (no branch in hot path)
         self._terminal_state_cost_fn = terminal_state_cost if terminal_state_cost is not None else lambda states, actions: 0
         self.noise_abs_cost = noise_abs_cost
+        self._setup_action_cost_fn()
         self.state = None
         self.info = None
 
@@ -175,10 +183,27 @@ class MPPI():
         self.states = None
         self.actions = None
 
+    def _setup_action_cost_fn(self):
+        """Resolve action cost computation at init time (diagonal vs full, abs vs not)."""
+        if self._diagonal_sigma:
+            inv_diag = self._noise_sigma_inv_diag
+            if self.noise_abs_cost:
+                self._compute_action_cost = lambda noise: self.lambda_ * torch.abs(noise) * inv_diag
+            else:
+                self._compute_action_cost = lambda noise: self.lambda_ * noise * inv_diag
+        else:
+            sigma_inv = self.noise_sigma_inv
+            if self.noise_abs_cost:
+                self._compute_action_cost = lambda noise: self.lambda_ * torch.abs(noise) @ sigma_inv
+            else:
+                self._compute_action_cost = lambda noise: self.lambda_ * noise @ sigma_inv
+
     def _sample_noise(self, shape):
-        """Sample from N(noise_mu, noise_sigma) using pre-computed Cholesky factor."""
+        """Sample from N(noise_mu, noise_sigma) using pre-computed Cholesky/diagonal factor."""
         z = torch.randn(*shape, self.nu, device=self.d, dtype=self.dtype)
-        return z @ self.noise_sigma_chol.T + self.noise_mu
+        if self._diagonal_sigma:
+            return z * self._noise_sigma_sqrt_diag + self.noise_mu
+        return z @ self._noise_sigma_chol.T + self.noise_mu
 
     def compile(self, **kwargs):
         """Compile the hot path with torch.compile for reduced kernel launch overhead.
@@ -240,7 +265,7 @@ class MPPI():
         cost_total = self._compute_total_cost_batch()
 
         self._compute_weighting(cost_total)
-        perturbations = torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
+        perturbations = torch.einsum('k,ktn->tn', self.omega, self.noise)
 
         self.U = self.U + perturbations
         action = self.get_action_sequence()[:self.u_per_command]
@@ -265,6 +290,49 @@ class MPPI():
         self.U = self._sample_noise((self.T,))
 
     def _compute_rollout_costs(self, perturbed_actions):
+        if self.M == 1:
+            return self._compute_rollout_costs_single(perturbed_actions)
+        return self._compute_rollout_costs_multi(perturbed_actions)
+
+    def _compute_rollout_costs_single(self, perturbed_actions):
+        """Fast path for M=1 (deterministic dynamics, the common case)."""
+        K, T, nu = perturbed_actions.shape
+        cost_total = torch.zeros(K, device=self.d, dtype=self.dtype)
+
+        if self.state.shape == (K, self.nx):
+            state = self.state.clone()
+        else:
+            state = self.state.view(1, -1).expand(K, -1)
+
+        need_storage = self.terminal_state_cost is not None
+        if need_storage:
+            states = torch.empty(1, K, T, self.nx, device=self.d, dtype=self.dtype)
+            actions = torch.empty(1, K, T, nu, device=self.d, dtype=self.dtype)
+
+        for t in range(T):
+            u = self.u_scale * perturbed_actions[:, t]
+            state = self._dynamics_fn(state, u, t)
+            if self.specific_action_sampler is not None:
+                state = self.specific_action_sampler.specific_dynamics(
+                    state.unsqueeze(0), state.unsqueeze(0), u.unsqueeze(0), t).squeeze(0)
+            c = self._running_cost_fn(state, u, t)
+            cost_total = cost_total + c.reshape(K)
+            if need_storage:
+                states[0, :, t] = state[:, :self.nx]
+                actions[0, :, t] = u
+
+        if need_storage:
+            c = self._terminal_state_cost_fn(states, actions)
+            if torch.is_tensor(c) and c.dim() > 1:
+                c = c.squeeze(0)
+            cost_total = cost_total + c
+        else:
+            states = None
+            actions = None
+        return cost_total, states, actions
+
+    def _compute_rollout_costs_multi(self, perturbed_actions):
+        """General path for M>1 (stochastic dynamics with variance cost)."""
         K, T, nu = perturbed_actions.shape
         assert nu == self.nu
 
@@ -272,41 +340,32 @@ class MPPI():
         cost_samples = cost_total.repeat(self.M, 1)
         cost_var = torch.zeros_like(cost_total)
 
-        # allow propagation of a sample of states (ex. to carry a distribution), or to start with a single state
         if self.state.shape == (K, self.nx):
             state = self.state
         else:
             state = self.state.view(1, -1).expand(K, -1)
 
-        # rollout action trajectory M times to estimate expected cost
         state = state.repeat(self.M, 1, 1)
 
-        # pre-allocate output tensors instead of list + stack
         states = torch.empty(self.M, K, T, self.nx, device=self.d, dtype=self.dtype)
         actions = torch.empty(self.M, K, T, nu, device=self.d, dtype=self.dtype)
-        # flatten M x K batch dims for direct dynamics/cost calls (bypasses handle_batch_input)
         MK = self.M * K
         state_flat = state.reshape(MK, self.nx)
         for t in range(T):
             u = self.u_scale * perturbed_actions[:, t].expand(self.M, -1, -1)
             u_flat = u.reshape(MK, nu)
             state_flat = self._dynamics_fn(state_flat, u_flat, t)
-            # potentially handle dynamics in a specific way for the specific action sampler
             if self.specific_action_sampler is not None:
                 state_3d = state_flat.reshape(self.M, K, -1)
                 state_3d = self.specific_action_sampler.specific_dynamics(state_3d, state.reshape(self.M, K, -1), u, t)
                 state_flat = state_3d.reshape(MK, -1)
             c = self._running_cost_fn(state_flat, u_flat, t)
-            # handle cost output — could be (MK,) or (MK, 1); ensure (M, K)
             cost_samples = cost_samples + c.reshape(self.M, K)
-            if self.M > 1:
-                cost_var += c.reshape(self.M, K).var(dim=0) * self._var_discount_factors[t]
+            cost_var += c.reshape(self.M, K).var(dim=0) * self._var_discount_factors[t]
 
-            # Save total states/actions
             states[:, :, t] = state_flat.reshape(self.M, K, -1)[:, :, :self.nx]
             actions[:, :, t] = u
 
-        # terminal state cost
         c = self._terminal_state_cost_fn(states, actions)
         cost_samples = cost_samples + c
         cost_total = cost_total + cost_samples.mean(dim=0)
@@ -347,16 +406,10 @@ class MPPI():
 
     def _compute_total_cost_batch(self):
         self._compute_perturbed_action_and_noise()
-        if self.noise_abs_cost:
-            action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
-            # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
-            # the actions with low noise if all states have the same cost. With abs(noise) we prefer actions close to the
-            # nomial trajectory.
-        else:
-            action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv  # Like original paper
+        action_cost = self._compute_action_cost(self.noise)
 
         rollout_cost, self.states, actions = self._compute_rollout_costs(self.perturbed_action)
-        self.actions = actions / self.u_scale
+        self.actions = actions / self.u_scale if actions is not None else None
 
         # action perturbation cost
         perturbation_cost = torch.sum(self.U * action_cost, dim=(1, 2))
@@ -471,7 +524,7 @@ class SMPPI(MPPI):
         cost_total = self._compute_total_cost_batch()
 
         self._compute_weighting(cost_total)
-        perturbations = torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
+        perturbations = torch.einsum('k,ktn->tn', self.omega, self.noise)
 
         self.U = self.U + perturbations
         # U is now the lifted control space, so we integrate it
@@ -500,13 +553,7 @@ class SMPPI(MPPI):
 
     def _compute_total_cost_batch(self):
         self._compute_perturbed_action_and_noise()
-        if self.noise_abs_cost:
-            action_cost = self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
-            # NOTE: The original paper does self.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv, but this biases
-            # the actions with low noise if all states have the same cost. With abs(noise) we prefer actions close to the
-            # nomial trajectory.
-        else:
-            action_cost = self.lambda_ * self.noise @ self.noise_sigma_inv  # Like original paper
+        action_cost = self._compute_action_cost(self.noise)
 
         # action difference as cost
         action_diff = self.u_scale * torch.diff(self.perturbed_action, dim=-2)
@@ -515,7 +562,7 @@ class SMPPI(MPPI):
         action_smoothness_cost *= self.w_action_seq_cost
 
         rollout_cost, self.states, actions = self._compute_rollout_costs(self.perturbed_action)
-        self.actions = actions / self.u_scale
+        self.actions = actions / self.u_scale if actions is not None else None
 
         # action perturbation cost
         perturbation_cost = torch.sum(self.U * action_cost, dim=(1, 2))
@@ -629,7 +676,7 @@ class KMPPI(MPPI):
         cost_total = self._compute_total_cost_batch()
 
         self._compute_weighting(cost_total)
-        perturbations = torch.sum(self.omega.view(-1, 1, 1) * self.noise_theta, dim=0)
+        perturbations = torch.einsum('k,ktn->tn', self.omega, self.noise_theta)
 
         self.theta = self.theta + perturbations
         self.U, _ = self.deparameterize_to_trajectory_single(self.theta)

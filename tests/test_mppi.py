@@ -239,15 +239,23 @@ class TestMPPI:
         assert action.shape == (2,)
 
     def test_stored_states_actions(self, noise_sigma):
-        """After command, states and actions should be populated."""
+        """After command, states/actions are None without terminal_state_cost (lazy storage)."""
         _seed()
         ctrl = self._make(noise_sigma)
         state = torch.tensor([0.0, 0.0], dtype=DTYPE, device=DEVICE)
         ctrl.command(state)
+        # Without terminal_state_cost, M=1 fast path skips storage
+        assert ctrl.states is None
+        assert ctrl.actions is None
+
+    def test_stored_states_actions_with_terminal(self, noise_sigma):
+        """With terminal_state_cost, states and actions should be populated."""
+        _seed()
+        ctrl = self._make(noise_sigma, terminal_state_cost=terminal_cost)
+        state = torch.tensor([0.0, 0.0], dtype=DTYPE, device=DEVICE)
+        ctrl.command(state)
         assert ctrl.states is not None
         assert ctrl.actions is not None
-        # states: M x K x T x nx (when M=1, leading dim may be squeezed by handle_batch_input)
-        # For M=1: states is K x T x nx after stacking
         assert ctrl.states.shape[-1] == 2  # nx
         assert ctrl.actions.shape[-1] == 2  # nu
 
@@ -308,7 +316,7 @@ class TestMPPI:
 
     def test_u_scale(self, noise_sigma):
         _seed()
-        ctrl = self._make(noise_sigma, u_scale=2.0)
+        ctrl = self._make(noise_sigma, u_scale=2.0, terminal_state_cost=terminal_cost)
         state = torch.tensor([0.0, 0.0], dtype=DTYPE, device=DEVICE)
         ctrl.command(state)
         assert ctrl.actions is not None
