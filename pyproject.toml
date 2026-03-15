@@ -1,6 +1,6 @@
 [project]
 name = "pytorch_mppi"
-version = "0.9.0"
+version = "0.9.1"
 description = "Model Predictive Path Integral (MPPI) implemented in pytorch"
 readme = "README.md" # Optional
 
@@ -52,7 +52,7 @@ classifiers = [# Optional
 # For an analysis of this field vs pip's requirements files see:
 # https://packaging.python.org/discussions/install-requires-vs-requirements/
 dependencies = [# Optional
-    'torch',
+    'torch>=2.0',
     'numpy',
     'arm-pytorch-utilities>=0.4',
 ]
